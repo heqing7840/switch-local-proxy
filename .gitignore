@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+.coverage
+.DS_Store
+dist/
+tmp/
+runtime/
+*.log
+key.txt
+output/
+.playwright-cli/
+support/translate_ui.mjs

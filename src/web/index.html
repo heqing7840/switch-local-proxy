@@ -1,0 +1,429 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='6' fill='%23168f61'/%3E%3Cpath d='M9 9h6v3h-3v8h3v3H9zm14 0h-6v3h3v8h-3v3h6z' fill='white'/%3E%3C/svg%3E" />
+    <title>Switch Local Proxy</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #f6f7f8;
+        color: #181a1f;
+        font-size: 15px;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-width: 320px; }
+      button, input { font: inherit; }
+      button { cursor: pointer; }
+      .shell { min-height: 100vh; }
+      header {
+        height: 64px;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0 28px;
+        background: #fff;
+        border-bottom: 1px solid #dfe2e6;
+      }
+      h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: 0; }
+      .endpoint { color: #676d78; font-size: 13px; }
+      #locale-select { height: 32px; border: 1px solid #ccd1d8; border-radius: 6px; padding: 0 8px; background: #fff; color: #292d34; }
+      main { max-width: 1160px; margin: 0 auto; padding: 24px 28px 48px; }
+      .summary {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        border: 1px solid #dfe2e6;
+        background: #fff;
+        border-radius: 8px;
+        overflow: hidden;
+      }
+      .metric { padding: 18px 20px; border-right: 1px solid #e5e7eb; min-width: 0; }
+      .metric:last-child { border-right: 0; }
+      .metric-label { color: #747b86; font-size: 12px; margin-bottom: 7px; }
+      .metric-value { font-size: 17px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .toolbar { margin-top: 24px; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
+      h2 { margin: 0; font-size: 16px; letter-spacing: 0; }
+      .tools { display: flex; align-items: center; gap: 10px; }
+      .cooldown { display: flex; align-items: center; gap: 7px; color: #5f6670; font-size: 13px; }
+      .cooldown input { width: 66px; height: 34px; border: 1px solid #ccd1d8; border-radius: 6px; padding: 0 8px; background: #fff; }
+      .button { height: 34px; border: 1px solid #cfd4da; border-radius: 6px; background: #fff; color: #292d34; padding: 0 12px; white-space: nowrap; }
+      .button:hover { background: #f2f4f5; }
+      .button.primary { border-color: #168f61; background: #168f61; color: #fff; }
+      .button.primary:hover { background: #117a52; }
+      .button.danger { border-color: #e1aaa6; color: #b8322c; }
+      .icon-button { width: 32px; height: 32px; padding: 0; display: inline-grid; place-items: center; border: 1px solid #d5d9df; border-radius: 6px; background: #fff; color: #555c66; }
+      .icon-button:disabled { opacity: .35; cursor: default; }
+      .provider-list { margin-top: 12px; border: 1px solid #dfe2e6; border-radius: 8px; overflow: hidden; background: #fff; }
+      .provider {
+        display: grid;
+        grid-template-columns: max-content minmax(230px, 1.4fr) max-content minmax(160px, 1fr) max-content max-content;
+        align-items: center;
+        min-height: 82px;
+        padding: 12px 16px;
+        border-bottom: 1px solid #e5e7eb;
+        gap: 14px;
+      }
+      .provider:last-child { border-bottom: 0; }
+      .provider.disabled { background: #fafafa; color: #8a9098; }
+      .provider.current { background: #f0faf6; box-shadow: inset 3px 0 0 #168f61; }
+      .priority { font-weight: 700; color: #727984; }
+      .name { font-weight: 650; overflow-wrap: anywhere; }
+      .current-badge { display: inline-block; margin-left: 8px; padding: 2px 6px; border-radius: 4px; background: #d8f2e6; color: #08764d; font-size: 11px; font-weight: 700; vertical-align: 1px; }
+      .subtle { margin-top: 5px; font-size: 12px; color: #7b828c; }
+      .key-hint { margin-left: 8px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #59616c; }
+      .context-observation { color: #66707b; }
+      .status { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; font-weight: 650; }
+      .dot { width: 8px; height: 8px; border-radius: 50%; background: #24a66a; flex: none; }
+      .status.cooling { color: #c53d36; }
+      .status.cooling .dot { background: #e44b43; }
+      .status.probing { color: #b06b00; }
+      .status.probing .dot { background: #e7a119; }
+      .status.disabled, .status.missing { color: #7b828c; }
+      .status.disabled .dot, .status.missing .dot { background: #aab0b7; }
+      .error { color: #626973; font-size: 12px; line-height: 1.45; overflow-wrap: anywhere; }
+      .actions { display: flex; gap: 6px; justify-content: flex-end; width: max-content; }
+      .toggle { position: relative; width: 38px; height: 22px; border: 0; border-radius: 11px; background: #b8bdc4; padding: 0; }
+      .toggle::after { content: ""; position: absolute; width: 16px; height: 16px; top: 3px; left: 3px; border-radius: 50%; background: #fff; transition: transform .15s ease; }
+      .toggle.on { background: #168f61; }
+      .toggle.on::after { transform: translateX(16px); }
+      .history { margin-top: 12px; border: 1px solid #dfe2e6; border-radius: 8px; overflow: hidden; background: #fff; }
+      .event { display: grid; grid-template-columns: 145px minmax(190px, 1fr) minmax(145px, .8fr) 80px 95px minmax(180px, 1.2fr); gap: 14px; align-items: center; min-height: 54px; padding: 10px 16px; border-bottom: 1px solid #e8eaed; font-size: 13px; }
+      .event:last-child { border-bottom: 0; }
+      .event-head { color: #747b86; min-height: 40px; font-size: 12px; font-weight: 650; }
+      .result { font-weight: 700; color: #168f61; }
+      .result.failure { color: #c53d36; }
+      .empty { padding: 28px 16px; color: #7b828c; text-align: center; }
+      .pagination { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 16px; border-top: 1px solid #e5e7eb; background: #fafbfc; }
+      .page-size, .page-nav { display: flex; align-items: center; gap: 8px; color: #626973; font-size: 13px; }
+      .page-size select { height: 32px; min-width: 64px; border: 1px solid #ccd1d8; border-radius: 6px; background: #fff; padding: 0 8px; }
+      .page-info { min-width: 150px; text-align: center; white-space: nowrap; }
+      .toast { position: fixed; right: 22px; bottom: 22px; background: #24272d; color: #fff; padding: 10px 14px; border-radius: 6px; opacity: 0; transform: translateY(8px); pointer-events: none; transition: .18s; }
+      .toast.show { opacity: 1; transform: translateY(0); }
+      dialog { width: min(460px, calc(100vw - 32px)); border: 0; border-radius: 8px; padding: 0; box-shadow: 0 18px 55px rgba(20, 24, 30, .22); }
+      dialog::backdrop { background: rgba(24, 28, 34, .38); }
+      .dialog-head { display: flex; align-items: center; justify-content: space-between; padding: 18px 20px; border-bottom: 1px solid #e5e7eb; }
+      .dialog-head h2 { font-size: 17px; }
+      .dialog-close { border: 0; background: transparent; color: #737a84; font-size: 24px; line-height: 1; padding: 2px 4px; }
+      .provider-form { padding: 20px; }
+      .field { display: grid; gap: 7px; margin-bottom: 16px; }
+      .field label { font-size: 13px; font-weight: 650; }
+      .field input { width: 100%; height: 40px; border: 1px solid #cbd0d7; border-radius: 6px; padding: 0 10px; outline: none; }
+      .field input:focus { border-color: #168f61; box-shadow: 0 0 0 3px rgba(22, 143, 97, .12); }
+      .field-help { color: #777e88; font-size: 12px; line-height: 1.45; }
+      .dialog-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 22px; }
+      .dialog-actions-right { display: flex; gap: 8px; margin-left: auto; }
+      @media (max-width: 900px) {
+        .summary { grid-template-columns: repeat(2, 1fr); }
+        .metric:nth-child(2) { border-right: 0; }
+        .metric:nth-child(-n+2) { border-bottom: 1px solid #e5e7eb; }
+        .provider { grid-template-columns: 46px 1fr 100px; }
+        .provider .error, .provider .latency { display: none; }
+        .actions { grid-column: 2 / 4; justify-content: flex-start; }
+        .event { grid-template-columns: 125px minmax(170px, 1fr) minmax(135px, .8fr) 75px; }
+        .event > :nth-child(5), .event > :nth-child(6) { display: none; }
+        .pagination { flex-wrap: wrap; }
+      }
+      @media (max-width: 600px) {
+        header { padding: 0 16px; }
+        .endpoint { display: none; }
+        main { padding: 16px; }
+        .summary { grid-template-columns: 1fr; }
+        .metric { border-right: 0; border-bottom: 1px solid #e5e7eb; }
+        .metric:last-child { border-bottom: 0; }
+        .toolbar { align-items: flex-start; flex-direction: column; }
+        .tools { width: 100%; justify-content: space-between; flex-wrap: wrap; }
+        .provider { grid-template-columns: 42px 1fr; gap: 8px; }
+        .provider .state-cell { grid-column: 2; }
+        .actions { grid-column: 2; }
+        .event { grid-template-columns: minmax(0, 1fr) minmax(125px, .8fr); }
+        .event > :nth-child(1), .event > :nth-child(4), .event > :nth-child(5), .event > :nth-child(6) { display: none; }
+        .pagination { align-items: flex-start; flex-direction: column; }
+        .page-nav { width: 100%; justify-content: space-between; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <header>
+        <h1>Switch Local Proxy</h1>
+        <div class="endpoint" id="endpoint">127.0.0.1:15722</div>
+        <select id="locale-select" aria-label="Language">
+          <option value="system">Follow System</option>
+          <option value="en">English</option>
+          <option value="zh-CN">简体中文</option>
+        </select>
+      </header>
+      <main>
+        <section class="summary" id="summary" aria-label="Service overview">
+          <div class="metric"><div class="metric-label" data-i18n="summary.service">Service</div><div class="metric-value" id="service">Connecting</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="summary.available">Available Channels</div><div class="metric-value" id="available">-</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="summary.current">Recently Used</div><div class="metric-value" id="current">-</div></div>
+          <div class="metric"><div class="metric-label" data-i18n="summary.uptime">Uptime</div><div class="metric-value" id="uptime">-</div></div>
+        </section>
+
+        <div class="toolbar">
+          <h2 data-i18n="queue.title">Provider Priority Queue</h2>
+          <div class="tools">
+            <label class="cooldown"><span data-i18n="queue.cooldown">Cooldown</span> <input id="cooldown" type="number" min="1" max="60" aria-label="Cooldown minutes" /> <span data-i18n="queue.minutes">Minutes</span></label>
+            <button class="button" id="reset-all" data-i18n="queue.resetAll">Reset All</button>
+            <button class="button primary" id="add-provider" data-i18n="queue.add">Add Channel</button>
+          </div>
+        </div>
+        <section class="provider-list" id="providers" aria-live="polite"></section>
+
+        <div class="toolbar">
+          <h2 data-i18n="history.title">Recent Request Records</h2>
+          <button class="button" id="clear-events" data-i18n="history.clear">Clear Records</button>
+        </div>
+        <section class="history" id="history" aria-label="Recent Request Records">
+          <div class="event event-head"><div data-i18n="history.time">Time</div><div data-i18n="history.provider">Provider</div><div data-i18n="history.model">Model</div><div data-i18n="history.result">Result</div><div data-i18n="history.latency">Latency</div><div data-i18n="history.message">Message</div></div>
+          <div id="events"></div>
+          <div class="pagination" id="event-pagination">
+            <label class="page-size"><span data-i18n="history.perPage">Per page</span>
+              <select id="event-page-size" aria-label="Events per page">
+                <option value="10">10</option>
+                <option value="20">20</option>
+                <option value="50">50</option>
+                <option value="100">100</option>
+              </select>
+              <span data-i18n="history.items">items</span>
+            </label>
+            <div class="page-nav">
+              <button class="icon-button" id="event-prev" type="button" aria-label="Previous page" title="Previous page">←</button>
+              <span class="page-info" id="event-page-info">Page 1 of 1 · 0 records</span>
+              <button class="icon-button" id="event-next" type="button" aria-label="Next page" title="Next page">→</button>
+            </div>
+          </div>
+        </section>
+      </main>
+    </div>
+    <dialog id="provider-dialog" aria-labelledby="provider-dialog-title">
+      <div class="dialog-head">
+        <h2 id="provider-dialog-title">Add Channel</h2>
+        <button class="dialog-close" id="dialog-close" type="button" aria-label="Close">×</button>
+      </div>
+      <form class="provider-form" id="provider-form">
+        <input id="provider-old-name" type="hidden" />
+        <div class="field">
+          <label for="provider-name" data-i18n="dialog.providerName">Channel Name</label>
+          <input id="provider-name" name="name" maxlength="80" autocomplete="off" required />
+        </div>
+        <div class="field">
+          <label for="provider-key" data-i18n="dialog.apiKey">API Key</label>
+          <input id="provider-key" name="key" type="password" autocomplete="new-password" />
+          <div class="field-help" id="key-preview" hidden></div>
+          <div class="field-help" id="key-help">The key is stored locally and never displayed.</div>
+        </div>
+        <div class="dialog-actions">
+          <button class="button danger" id="delete-provider" type="button" hidden data-i18n="dialog.delete">Delete Channel</button>
+          <div class="dialog-actions-right">
+            <button class="button" id="dialog-cancel" type="button" data-i18n="dialog.cancel">Cancel</button>
+            <button class="button primary" type="submit" data-i18n="dialog.save">Save</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+    <div class="toast" id="toast"></div>
+    <script>
+      const localeStorageKey = "switchLocalProxy.locale";
+      const eventPageSizeStorageKey = "switchLocalProxy.eventPageSize";
+      const supportedLocales = ["system", "en", "zh-CN"];
+      const allowedEventPageSizes = [10, 20, 50, 100];
+      let currentLocale = "en";
+      let messages = {};
+      let eventPage = 1;
+      let eventPageSize = Number(localStorage.getItem(eventPageSizeStorageKey)) || 20;
+      if (!allowedEventPageSizes.includes(eventPageSize)) eventPageSize = 20;
+      let latestEvents = [];
+      let latestProviders = [];
+      const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+      const t = (key, variables = {}) => String(messages[key] ?? key).replace(/\{(\w+)\}/g, (_, name) => String(variables[name] ?? `{${name}}`));
+      const systemLocale = () => navigator.languages?.some(value => value.toLowerCase().startsWith("zh")) ? "zh-CN" : "en";
+      const preferredLocale = () => { const value = localStorage.getItem(localeStorageKey) || "system"; return supportedLocales.includes(value) ? value : "system"; };
+      const resolvedLocale = () => { const value = preferredLocale(); return value === "system" ? systemLocale() : value; };
+      const ago = (seconds) => {
+        if (seconds < 60) return t("time.seconds", {value: seconds});
+        if (seconds < 3600) return t("time.minutes", {value: Math.floor(seconds / 60)});
+        return t("time.hoursMinutes", {hours: Math.floor(seconds / 3600), minutes: Math.floor((seconds % 3600) / 60)});
+      };
+      const clock = (seconds) => `${Math.floor(seconds / 60)}:${String(seconds % 60).padStart(2, "0")}`;
+      const eventTime = (timestamp) => new Date(timestamp * 1000).toLocaleString(currentLocale === "zh-CN" ? "zh-CN" : "en-US", {hour12:false});
+      const formatTokens = (value) => {
+        const number = Number(value || 0);
+        if (!number) return "-";
+        if (number >= 100000) return `${(number / 10000).toFixed(1)}${t("unit.tenThousandTokens")}`;
+        if (number >= 1000) return `${(number / 1000).toFixed(1)}k`;
+        return String(number);
+      };
+      const contextSummary = (provider) => {
+        const success = formatTokens(provider.max_success_input_tokens);
+        const failure = formatTokens(provider.min_context_failure_tokens);
+        if (success !== "-" && failure !== "-") return t("queue.contextObserved", {success, failure});
+        if (success !== "-") return t("queue.contextSuccess", {value: success});
+        if (failure !== "-") return t("queue.contextFailure", {value: failure});
+        return t("queue.contextUnknown");
+      };
+      const toast = (message) => {
+        const el = document.querySelector("#toast"); el.textContent = message; el.classList.add("show");
+        clearTimeout(window.toastTimer); window.toastTimer = setTimeout(() => el.classList.remove("show"), 1800);
+      };
+      function applyTranslations() {
+        document.documentElement.lang = currentLocale;
+        document.title = t("brandName");
+        document.querySelector("h1").textContent = t("brandName");
+        document.querySelector("#summary").setAttribute("aria-label", t("summary.service"));
+        document.querySelector("#history").setAttribute("aria-label", t("history.title"));
+        document.querySelectorAll("[data-i18n]").forEach(element => { element.textContent = t(element.dataset.i18n); });
+        document.querySelector("#locale-select").setAttribute("aria-label", t("language.english"));
+        document.querySelector("#cooldown").setAttribute("aria-label", `${t("queue.cooldown")} ${t("queue.minutes")}`);
+        document.querySelector("#dialog-close").setAttribute("aria-label", t("dialog.close"));
+        document.querySelector("#event-prev").setAttribute("aria-label", t("history.previous"));
+        document.querySelector("#event-prev").title = t("history.previous");
+        document.querySelector("#event-next").setAttribute("aria-label", t("history.next"));
+        document.querySelector("#event-next").title = t("history.next");
+        document.querySelector("#event-page-size").setAttribute("aria-label", t("history.perPage"));
+        document.querySelector("#key-help").textContent = document.querySelector("#provider-old-name").value ? t("dialog.keyHelpEdit") : t("dialog.keyHelpAdd");
+        renderEvents();
+      }
+      async function loadLocale() {
+        currentLocale = resolvedLocale();
+        const response = await fetch(`/locales/${encodeURIComponent(currentLocale)}.json`, {cache:"no-store"});
+        messages = response.ok ? await response.json() : {};
+        document.querySelector("#locale-select").value = preferredLocale();
+        applyTranslations();
+      }
+      async function call(path, options = {}) {
+        const response = await fetch(path, { headers: {"Content-Type":"application/json", "Accept-Language": currentLocale}, ...options });
+        const payload = await response.json();
+        if (!response.ok) throw new Error(payload.error?.message || t("error.requestFailed"));
+        return payload;
+      }
+      function render(data) {
+        latestProviders = data.providers;
+        const ready = data.providers.filter(p => p.health === "ready").length;
+        document.querySelector("#service").textContent = data.ok ? t("status.running") : t("status.configError");
+        document.querySelector("#available").textContent = `${ready} / ${data.providers.length}`;
+        document.querySelector("#current").textContent = data.current_provider || t("status.noRequest");
+        document.querySelector("#uptime").textContent = ago(data.uptime_seconds);
+        document.querySelector("#endpoint").textContent = `127.0.0.1:15722 · ${data.forced_model || "-"}`;
+        const cooldown = document.querySelector("#cooldown");
+        if (document.activeElement !== cooldown) cooldown.value = Math.round(data.cooldown_seconds / 60);
+        document.querySelector("#providers").innerHTML = data.providers.map((p, index) => `
+          <div class="provider ${p.enabled ? "" : "disabled"} ${p.is_current ? "current" : ""}">
+            <div class="priority">P${p.priority}</div>
+            <div><div class="name">${esc(p.name)}${p.is_current ? `<span class="current-badge">${t("queue.inUse")}</span>` : ""}</div><div class="subtle">${t("queue.successFailure", {success:p.success_count, failure:p.failure_count})}<span class="key-hint">${esc(p.key_hint || "-")}</span></div><div class="subtle context-observation">${contextSummary(p)}</div></div>
+            <div class="state-cell"><span class="status ${p.health}"><span class="dot"></span>${t(`health.${p.health}`)}${p.cooldown_remaining ? ` ${clock(p.cooldown_remaining)}` : ""}</span></div>
+            <div class="error">${esc(p.last_error || t("queue.noError"))}</div>
+            <div class="latency">${p.last_latency_ms == null ? "-" : `${p.last_latency_ms} ${t("unit.milliseconds")}`}</div>
+            <div class="actions">
+              <button class="icon-button" title="${t("action.up")}" data-name="${esc(p.name)}" data-action="up" ${index === 0 ? "disabled" : ""}>↑</button>
+              <button class="icon-button" title="${t("action.down")}" data-name="${esc(p.name)}" data-action="down" ${index === data.providers.length - 1 ? "disabled" : ""}>↓</button>
+              <button class="button" data-name="${esc(p.name)}" data-action="reset">${t("action.reset")}</button>
+              <button class="button" data-name="${esc(p.name)}" data-action="edit">${t("action.edit")}</button>
+              <button class="toggle ${p.enabled ? "on" : ""}" title="${t("action.toggle")}" data-name="${esc(p.name)}" data-action="toggle" aria-label="${t("action.toggle")}"></button>
+            </div>
+          </div>`).join("");
+        latestEvents = data.events;
+        renderEvents();
+      }
+      function renderEvents() {
+        const total = latestEvents.length;
+        const pages = Math.max(1, Math.ceil(total / eventPageSize));
+        eventPage = Math.max(1, Math.min(eventPage, pages));
+        const start = (eventPage - 1) * eventPageSize;
+        const visibleEvents = latestEvents.slice(start, start + eventPageSize);
+        document.querySelector("#events").innerHTML = visibleEvents.length ? visibleEvents.map(item => `
+          <div class="event">
+            <div>${eventTime(item.at)}</div>
+            <div>${esc(item.provider)}</div>
+            <div><div>${esc(item.requested_model && item.model && item.requested_model !== item.model ? `${item.requested_model} → ${item.model}` : (item.model || item.requested_model || "-"))}</div><div class="subtle">${t("history.inputEstimate", {value:item.input_estimator_version === 2 ? formatTokens(item.input_tokens_estimate) : "-"})}${item.retry_count ? ` · ${t("history.retryCount", {value:item.retry_count})}` : ""}</div></div>
+            <div class="result ${item.result}">${item.result === "success" ? t("history.success") : t("history.failure")}</div>
+            <div>${item.latency_ms == null ? "-" : `${item.latency_ms} ${t("unit.milliseconds")}`}</div>
+            <div class="error">${esc(item.message === "请求成功" ? t("history.requestSucceeded") : item.message)}</div>
+          </div>`).join("") : `<div class="empty">${t("history.empty")}</div>`;
+        document.querySelector("#event-page-size").value = String(eventPageSize);
+        document.querySelector("#event-page-info").textContent = t("history.pageSummary", {page:eventPage, pages, total});
+        document.querySelector("#event-prev").disabled = eventPage <= 1;
+        document.querySelector("#event-next").disabled = eventPage >= pages;
+      }
+      async function refresh() {
+        try { render(await call("/api/status")); }
+        catch (error) { document.querySelector("#service").textContent = t("status.connectionFailed"); }
+      }
+      const dialog = document.querySelector("#provider-dialog");
+      const form = document.querySelector("#provider-form");
+      function openProviderDialog(name = "") {
+        const editing = Boolean(name);
+        const provider = latestProviders.find(item => item.name === name);
+        document.querySelector("#provider-dialog-title").textContent = editing ? t("dialog.editTitle") : t("dialog.addTitle");
+        document.querySelector("#provider-old-name").value = name;
+        document.querySelector("#provider-name").value = name;
+        document.querySelector("#provider-key").value = "";
+        document.querySelector("#provider-key").required = !editing;
+        document.querySelector("#provider-key").placeholder = editing ? (provider?.key_hint || "") : "";
+        document.querySelector("#key-preview").hidden = !editing;
+        document.querySelector("#key-preview").textContent = editing ? t("dialog.currentKey", {key: provider?.key_hint || "-"}) : "";
+        document.querySelector("#key-help").textContent = editing ? t("dialog.keyHelpEdit") : t("dialog.keyHelpAdd");
+        document.querySelector("#delete-provider").hidden = !editing;
+        dialog.showModal();
+        document.querySelector("#provider-name").focus();
+      }
+      function closeProviderDialog() { dialog.close(); form.reset(); }
+      document.querySelector("#locale-select").addEventListener("change", async event => {
+        localStorage.setItem(localeStorageKey, event.target.value);
+        await loadLocale();
+        await refresh();
+      });
+      document.querySelector("#event-page-size").addEventListener("change", event => {
+        const value = Number(event.target.value);
+        eventPageSize = allowedEventPageSizes.includes(value) ? value : 20;
+        eventPage = 1;
+        localStorage.setItem(eventPageSizeStorageKey, String(eventPageSize));
+        renderEvents();
+      });
+      document.querySelector("#event-prev").addEventListener("click", () => { eventPage -= 1; renderEvents(); });
+      document.querySelector("#event-next").addEventListener("click", () => { eventPage += 1; renderEvents(); });
+      document.querySelector("#providers").addEventListener("click", async event => {
+        const button = event.target.closest("[data-action]"); if (!button) return;
+        if (button.dataset.action === "edit") { openProviderDialog(button.dataset.name); return; }
+        try { render(await call("/api/provider-action", {method:"POST", body:JSON.stringify({name:button.dataset.name, action:button.dataset.action})})); }
+        catch (error) { toast(error.message); }
+      });
+      document.querySelector("#add-provider").addEventListener("click", () => openProviderDialog());
+      document.querySelector("#dialog-close").addEventListener("click", closeProviderDialog);
+      document.querySelector("#dialog-cancel").addEventListener("click", closeProviderDialog);
+      dialog.addEventListener("click", event => { if (event.target === dialog) closeProviderDialog(); });
+      form.addEventListener("submit", async event => {
+        event.preventDefault();
+        const oldName = document.querySelector("#provider-old-name").value;
+        const payload = {old_name: oldName, name: document.querySelector("#provider-name").value.trim(), key: document.querySelector("#provider-key").value.trim()};
+        try {
+          const data = await call("/api/providers", {method: oldName ? "PUT" : "POST", body: JSON.stringify(payload)});
+          closeProviderDialog(); render(data); toast(oldName ? t("toast.providerUpdated") : t("toast.providerAdded"));
+        } catch (error) { toast(error.message); }
+      });
+      document.querySelector("#delete-provider").addEventListener("click", async () => {
+        const name = document.querySelector("#provider-old-name").value;
+        if (!name || !confirm(t("dialog.deleteConfirm", {name}))) return;
+        try { const data = await call("/api/providers", {method:"DELETE", body:JSON.stringify({name})}); closeProviderDialog(); render(data); toast(t("toast.providerDeleted")); }
+        catch (error) { toast(error.message); }
+      });
+      document.querySelector("#reset-all").addEventListener("click", async () => {
+        try { render(await call("/api/reset-all", {method:"POST", body:"{}"})); toast(t("toast.restoredAll")); }
+        catch (error) { toast(error.message); }
+      });
+      document.querySelector("#clear-events").addEventListener("click", async () => {
+        try { render(await call("/api/clear-events", {method:"POST", body:"{}"})); toast(t("toast.recordsCleared")); }
+        catch (error) { toast(error.message); }
+      });
+      document.querySelector("#cooldown").addEventListener("change", async event => {
+        const minutes = Math.max(1, Math.min(60, Number(event.target.value) || 5));
+        try { render(await call("/api/settings", {method:"PUT", body:JSON.stringify({cooldown_seconds:minutes * 60})})); toast(t("toast.cooldownSaved")); }
+        catch (error) { toast(error.message); }
+      });
+      (async () => { await loadLocale(); await refresh(); setInterval(refresh, 3000); })();
+    </script>
+  </body>
+</html>
