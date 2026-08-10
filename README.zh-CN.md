@@ -4,7 +4,7 @@
 
 一个本地 AI API 代理，提供多 Key 优先级路由、自动故障转移、重试、冷却和 Provider 状态监控。
 
-当前版本接收 OpenAI Responses 兼容请求；路由和健康状态核心与具体厂商协议解耦，后续可以增加 Anthropic Messages 等适配器。
+当前版本接收 OpenAI Responses 和 Anthropic Messages 兼容请求，两种适配器共用 Provider 优先级、健康状态、重试、冷却和监控逻辑。
 
 ## 功能
 
@@ -12,6 +12,7 @@
 - HTTP 502 在同一线路等待 1 秒重试一次，再决定是否切换。
 - 临时冷却和到期自动恢复探测。
 - 向客户端转发 SSE 前识别早期错误事件。
+- 支持 OpenAI Responses 和 Anthropic Messages 透传适配。
 - 管理页显示线路状态、延迟、失败原因、脱敏 Key、模型路由和请求记录。
 - 支持在管理页添加、编辑、删除、启停、排序和恢复 Provider。
 - 不依赖数据库或云端控制台，运行状态保存在本机。
@@ -52,6 +53,27 @@ chmod 600 key.txt
 ```
 
 管理页会在本机打开。客户端只需要连接本地 `/v1` 接口，不需要知道上游 Key；代理只从本机被忽略的 `key.txt` 读取它们。
+
+## Claude Code
+
+Claude Code 可以通过本地 Anthropic Messages 适配器使用代理，同时不接触真实的上游 Provider Key：
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:15722
+export ANTHROPIC_AUTH_TOKEN=local-proxy
+claude
+```
+
+`local-proxy` 只是一个不敏感的本地占位值。Switch Local Proxy 会移除客户端凭据，并在转发时注入当前选中 Provider 的真实 Key。在 Claude Code 中运行 `/status`，可以确认 Anthropic Base URL 已指向本地服务。
+
+如需长期生效，可把相同变量写入 `~/.claude/settings.json` 的 `env` 对象。不要把真实上游密钥写进项目级 Claude 配置。
+
+当前支持的 Anthropic 路径：
+
+- `POST /v1/messages`
+- `POST /v1/messages/count_tokens`
+
+适配器会保留 `anthropic-version`、`anthropic-beta` 等 Anthropic 请求头，将模型替换为 `forced_model`，并识别 Anthropic 流式 SSE 事件。
 
 ## 导入已有 Key
 
@@ -100,7 +122,9 @@ provider-name:provider-api-key
 
 ## 兼容范围
 
-当前版本实现 OpenAI Responses 兼容的 `/v1/responses`，面向本机单用户场景。Claude、Gemini 或其他使用不同协议的客户端，需要增加对应适配器后才能直接连接。
+当前版本实现 OpenAI Responses 与 Anthropic Messages 两种透传适配器。上游服务必须支持客户端使用的协议；如果上游只支持 OpenAI Responses，Claude Code 不能仅靠本代理直接使用，仍需要额外的请求与响应格式转换层。Gemini 等其他协议仍需增加对应适配器。
+
+Claude Code 配置依据 [Claude Code 官方 LLM Gateway 指南](https://code.claude.com/docs/en/llm-gateway-connect)，请求路径和请求头依据 [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create)。
 
 ## 安全
 

@@ -47,7 +47,7 @@
 - 语言：支持 `English` 与 `简体中文`；跟随系统时中文系统显示简体中文，其他系统回退英文，手动选择持久化并覆盖系统判断。
 - 翻译：使用授权的 Tongyi Qwen / DashScope 生成 67 项英文基线，随后按运维界面语境校正文案；新增请求成功文案后共 68 项。
 - 验证：构建必须比较中英 key 集与占位符，并保持 `Switch Local Proxy`、`English`、`简体中文` 等固定名称。
-- 发布边界：当前只完成本地命名和 GitHub 发布准备，不创建、不推送远程仓库；发布前必须重新检查名称占用。
+- 发布结果：代码已发布到 `heqing7840/switch-local-proxy`，许可证为 The Unlicense；公开内容已检查并排除本机 Key、私有上游地址和运行时数据。
 
 ## 2026-08-10 - 请求记录分页
 
@@ -83,3 +83,11 @@
 - 需求：允许他人无需授权或署名即可复制、修改、商用、闭源和重新发布，尽量接近放弃版权。
 - 决策：采用 `The Unlicense`，而不是仍要求保留许可与通知的 Apache 2.0；项目根目录维护标准 `LICENSE` 文本。
 - 边界：公共领域奉献和免责声明以 `LICENSE` 原文为准；不同司法辖区对版权放弃的承认可能不同，本项目不作额外专利或商标授权承诺。
+
+## 2026-08-10 - Claude Code / Anthropic Messages 适配
+
+- 需求：让项目不只服务 Codex，也能作为 Claude Code 的本地多 Key 故障转移代理。
+- 官方依据：Claude Code 通过 `ANTHROPIC_BASE_URL` 和网关凭据连接 LLM Gateway；Messages API 使用 `/v1/messages`、`x-api-key` 和 `anthropic-version`。
+- 最终方案：新增 `anthropic_messages` 适配器，支持 Messages 与 Count Tokens；移除客户端占位认证并注入 Provider Key，保留 Anthropic 协议头，复用现有重试、冷却、SSE 预检和事件记录。
+- 兼容边界：这是 Anthropic 协议透传，不是 Anthropic 与 OpenAI 的请求/响应转换。上游不支持 Messages 时，代理不能凭空让 Claude Code 工作。
+- 安全：Claude Code 可使用 `ANTHROPIC_AUTH_TOKEN=local-proxy` 作为非敏感本地占位值，真实 Provider Key 仍只存在于被忽略且权限为 `600` 的 `key.txt`。

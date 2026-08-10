@@ -27,6 +27,17 @@ MAX_PROVIDERS = 30
 SAME_PROVIDER_502_RETRIES = 1
 CONTEXT_ESTIMATOR_VERSION = 2
 PRIVATE_SETTING_NAMES = {"upstream_url", "forced_model"}
+OPENAI_RESPONSES_ADAPTER = "openai_responses"
+ANTHROPIC_MESSAGES_ADAPTER = "anthropic_messages"
+SUPPORTED_ADAPTERS = (OPENAI_RESPONSES_ADAPTER, ANTHROPIC_MESSAGES_ADAPTER)
+
+
+def adapter_for_path(path: str) -> str | None:
+    if path == "/v1/responses":
+        return OPENAI_RESPONSES_ADAPTER
+    if path in {"/v1/messages", "/v1/messages/count_tokens"}:
+        return ANTHROPIC_MESSAGES_ADAPTER
+    return None
 
 
 def safe_int(value: Any, default: int) -> int:
@@ -197,9 +208,15 @@ def inspect_sse_prime(payload: bytes) -> tuple[str, str | None]:
         "event: response.output_text.delta",
         "event: response.function_call_arguments.delta",
         "event: response.completed",
+        "event: content_block_delta",
+        "event: message_delta",
+        "event: message_stop",
         '"type":"response.output_text.delta"',
         '"type":"response.function_call_arguments.delta"',
         '"type":"response.completed"',
+        '"type":"content_block_delta"',
+        '"type":"message_delta"',
+        '"type":"message_stop"',
     )
     compact = lowered.replace(" ", "")
     if any(marker in lowered or marker in compact for marker in productive_markers):
@@ -382,6 +399,7 @@ class ProxyStore:
         request_id: str | None = None,
         input_tokens_estimate: int | None = None,
         retry_count: int = 0,
+        adapter: str = OPENAI_RESPONSES_ADAPTER,
     ) -> None:
         event = {
             "id": f"{time.time_ns()}",
@@ -396,6 +414,7 @@ class ProxyStore:
             "input_tokens_estimate": input_tokens_estimate,
             "input_estimator_version": CONTEXT_ESTIMATOR_VERSION,
             "retry_count": max(0, retry_count),
+            "adapter": adapter if adapter in SUPPORTED_ADAPTERS else OPENAI_RESPONSES_ADAPTER,
         }
         self.events.append(event)
         self.events = self.events[-200:]
@@ -546,6 +565,7 @@ class ProxyStore:
         request_id: str | None = None,
         input_tokens_estimate: int | None = None,
         retry_count: int = 0,
+        adapter: str = OPENAI_RESPONSES_ADAPTER,
     ) -> None:
         now = time.time()
         with self.lock:
@@ -577,6 +597,7 @@ class ProxyStore:
                 request_id,
                 input_tokens_estimate,
                 retry_count,
+                adapter,
             )
             self._save_runtime()
 
@@ -590,6 +611,7 @@ class ProxyStore:
         request_id: str | None = None,
         input_tokens_estimate: int | None = None,
         retry_count: int = 0,
+        adapter: str = OPENAI_RESPONSES_ADAPTER,
     ) -> None:
         now = time.time()
         with self.lock:
@@ -619,6 +641,7 @@ class ProxyStore:
                 request_id,
                 input_tokens_estimate,
                 retry_count,
+                adapter,
             )
             self._save_runtime()
 
@@ -694,6 +717,7 @@ class ProxyStore:
                 "uptime_seconds": int(now - self.started_at),
                 "cooldown_seconds": self.settings["cooldown_seconds"],
                 "forced_model": self.settings["forced_model"],
+                "supported_adapters": list(SUPPORTED_ADAPTERS),
                 "last_switch": self.last_switch,
                 "current_provider": current_provider,
                 "key_error": key_error,

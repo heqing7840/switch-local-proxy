@@ -11,8 +11,11 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
 from proxy_core import (  # noqa: E402
+    ANTHROPIC_MESSAGES_ADAPTER,
     DEFAULT_PROVIDER_NAMES,
+    OPENAI_RESPONSES_ADAPTER,
     ProxyStore,
+    adapter_for_path,
     estimate_input_tokens,
     inspect_responses_payload,
     inspect_sse_prime,
@@ -27,6 +30,122 @@ from server import Handler, header_latin1  # noqa: E402
 
 
 class ProxyCoreTests(unittest.TestCase):
+    def test_supported_adapter_paths_are_explicit(self):
+        self.assertEqual(adapter_for_path("/v1/responses"), OPENAI_RESPONSES_ADAPTER)
+        self.assertEqual(adapter_for_path("/v1/messages"), ANTHROPIC_MESSAGES_ADAPTER)
+        self.assertEqual(
+            adapter_for_path("/v1/messages/count_tokens"), ANTHROPIC_MESSAGES_ADAPTER
+        )
+        self.assertIsNone(adapter_for_path("/v1/chat/completions"))
+
+    def test_anthropic_messages_and_count_tokens_use_provider_credentials(self):
+        class AnthropicUpstream(Handler):
+            requests = []
+
+            def log_message(self, format, *args):
+                pass
+
+            def do_POST(self):
+                body = self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                type(self).requests.append(
+                    {
+                        "path": self.path,
+                        "authorization": self.headers.get("Authorization"),
+                        "x_api_key": self.headers.get("X-Api-Key"),
+                        "anthropic_version": self.headers.get("anthropic-version"),
+                        "anthropic_beta": self.headers.get("anthropic-beta"),
+                        "body": json.loads(body),
+                    }
+                )
+                if self.path == "/v1/messages/count_tokens":
+                    response_body = b'{"input_tokens":12}'
+                else:
+                    response_body = (
+                        b'{"id":"msg_test","type":"message","role":"assistant",'
+                        b'"content":[{"type":"text","text":"ok"}],"model":"gpt-5.6-sol",'
+                        b'"stop_reason":"end_turn","usage":{"input_tokens":4,"output_tokens":1}}'
+                    )
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(response_body)))
+                self.end_headers()
+                self.wfile.write(response_body)
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text("claude-route:sk-upstream-provider\n", encoding="utf-8")
+            store = ProxyStore(root / "state", key_file)
+            store.settings["forced_model"] = "gpt-5.6-sol"
+            upstream = ThreadingHTTPServer(("127.0.0.1", 0), AnthropicUpstream)
+            upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+            upstream_thread.start()
+            store.settings["upstream_base_url"] = (
+                f"http://127.0.0.1:{upstream.server_port}/v1"
+            )
+
+            proxy = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+            previous_store = server.STORE
+            server.STORE = store
+            proxy_thread.start()
+            try:
+                for path in ("/v1/messages", "/v1/messages/count_tokens"):
+                    connection = http.client.HTTPConnection(
+                        "127.0.0.1", proxy.server_port, timeout=4
+                    )
+                    connection.request(
+                        "POST",
+                        path,
+                        body=json.dumps(
+                            {
+                                "model": "claude-sonnet-4-6",
+                                "max_tokens": 32,
+                                "messages": [{"role": "user", "content": "hello"}],
+                            }
+                        ),
+                        headers={
+                            "Content-Type": "application/json",
+                            "Authorization": "Bearer local-only-token",
+                            "X-Api-Key": "local-only-key",
+                            "Anthropic-Version": "2023-06-01",
+                            "anthropic-beta": "test-feature",
+                        },
+                    )
+                    response = connection.getresponse()
+                    response.read()
+                    self.assertEqual(response.status, 200)
+                    self.assertEqual(
+                        response.getheader("X-Switch-Local-Proxy-Provider"),
+                        "claude-route",
+                    )
+                    connection.close()
+
+                self.assertEqual(
+                    [item["path"] for item in AnthropicUpstream.requests],
+                    ["/v1/messages", "/v1/messages/count_tokens"],
+                )
+                for request in AnthropicUpstream.requests:
+                    self.assertEqual(
+                        request["authorization"], "Bearer sk-upstream-provider"
+                    )
+                    self.assertEqual(request["x_api_key"], "sk-upstream-provider")
+                    self.assertEqual(request["anthropic_version"], "2023-06-01")
+                    self.assertEqual(request["anthropic_beta"], "test-feature")
+                    self.assertEqual(request["body"]["model"], "gpt-5.6-sol")
+                events = store.status()["events"]
+                self.assertEqual(events[0]["adapter"], ANTHROPIC_MESSAGES_ADAPTER)
+                self.assertEqual(events[0]["requested_model"], "claude-sonnet-4-6")
+                self.assertEqual(events[0]["model"], "gpt-5.6-sol")
+            finally:
+                proxy.shutdown()
+                proxy.server_close()
+                proxy_thread.join(timeout=2)
+                upstream.shutdown()
+                upstream.server_close()
+                upstream_thread.join(timeout=2)
+                server.STORE = previous_store
+
     def test_502_retries_same_provider_before_failover(self):
         class FlakyUpstream(Handler):
             calls = 0
@@ -175,6 +294,19 @@ class ProxyCoreTests(unittest.TestCase):
             b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta","delta":"ok"}\n\n'
         )
         self.assertEqual(outcome, "productive")
+
+    def test_anthropic_sse_delta_is_productive_and_error_is_retryable(self):
+        productive, _ = inspect_sse_prime(
+            b'event: content_block_delta\ndata: {"type":"content_block_delta",'
+            b'"delta":{"type":"text_delta","text":"ok"}}\n\n'
+        )
+        self.assertEqual(productive, "productive")
+        outcome, message = inspect_sse_prime(
+            b'event: error\ndata: {"type":"error",'
+            b'"error":{"type":"overloaded_error","message":"Overloaded"}}\n\n'
+        )
+        self.assertEqual(outcome, "error")
+        self.assertEqual(message, "Overloaded")
 
     def test_json_error_envelope_is_detected(self):
         self.assertEqual(

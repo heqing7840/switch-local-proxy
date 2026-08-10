@@ -14,7 +14,9 @@ from urllib.parse import quote, urlparse
 import httpx
 
 from proxy_core import (
+    ANTHROPIC_MESSAGES_ADAPTER,
     ProxyStore,
+    adapter_for_path,
     estimate_input_tokens,
     inspect_responses_payload,
     inspect_sse_prime,
@@ -70,6 +72,7 @@ HOP_BY_HOP_HEADERS = {
     "content-length",
     "host",
     "authorization",
+    "x-api-key",
 }
 
 
@@ -143,8 +146,9 @@ class Handler(BaseHTTPRequestHandler):
             STORE.clear_events()
             self._send_json(200, STORE.status())
             return
-        if parsed.path.startswith("/v1/"):
-            self._proxy_upstream()
+        adapter = adapter_for_path(parsed.path)
+        if adapter:
+            self._proxy_upstream(adapter)
             return
         self._send_json(404, {"error": {"message": "Not found"}})
 
@@ -209,7 +213,7 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return value if isinstance(value, dict) else {}
 
-    def _proxy_upstream(self) -> None:
+    def _proxy_upstream(self, adapter: str) -> None:
         raw_body = self._read_body()
         try:
             request_json = json.loads(raw_body)
@@ -244,7 +248,7 @@ class Handler(BaseHTTPRequestHandler):
                     with CLIENT.stream(
                         "POST",
                         upstream_url,
-                        headers=self._upstream_headers(provider["key"]),
+                        headers=self._upstream_headers(provider["key"], adapter),
                         content=payload,
                     ) as response:
                         latency_ms = int((time.monotonic() - started) * 1000)
@@ -264,7 +268,7 @@ class Handler(BaseHTTPRequestHandler):
                             message = self._upstream_error(response.status_code, error_body)
                             STORE.mark_failure(
                                 provider["name"], message, latency_ms, requested_model, upstream_model,
-                                request_id, input_tokens_estimate, retry_count
+                                request_id, input_tokens_estimate, retry_count, adapter
                             )
                             failures.append({"provider": provider["name"], "error": message})
                             logging.warning("provider=%s failure=%s", provider["name"], message)
@@ -272,7 +276,7 @@ class Handler(BaseHTTPRequestHandler):
                         if response.status_code >= 400:
                             body = response.read()
                             STORE.release_untried_probe(provider)
-                            self._send_upstream_buffered(response, body)
+                            self._send_upstream_buffered(response, body, provider["name"])
                             self._release_remaining_probes(providers[index + 1 :])
                             return
 
@@ -280,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
                         if "text/event-stream" in content_type or request_json.get("stream") is True:
                             outcome = self._send_stream(
                                 response, provider, latency_ms, requested_model, upstream_model,
-                                request_id, input_tokens_estimate, retry_count
+                                request_id, input_tokens_estimate, retry_count, adapter
                             )
                             if outcome == "retry":
                                 failures.append(
@@ -299,15 +303,15 @@ class Handler(BaseHTTPRequestHandler):
                             message = compact_error(semantic_error)
                             STORE.mark_failure(
                                 provider["name"], message, latency_ms, requested_model, upstream_model,
-                                request_id, input_tokens_estimate, retry_count
+                                request_id, input_tokens_estimate, retry_count, adapter
                             )
                             failures.append({"provider": provider["name"], "error": message})
                             break
                         STORE.mark_success(
                             provider["name"], latency_ms, requested_model, upstream_model,
-                            request_id, input_tokens_estimate, retry_count
+                            request_id, input_tokens_estimate, retry_count, adapter
                         )
-                        self._send_upstream_buffered(response, body)
+                        self._send_upstream_buffered(response, body, provider["name"])
                         self._release_remaining_probes(providers[index + 1 :])
                         return
                 except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as error:
@@ -315,7 +319,7 @@ class Handler(BaseHTTPRequestHandler):
                     latency_ms = int((time.monotonic() - started) * 1000)
                     STORE.mark_failure(
                         provider["name"], message, latency_ms, requested_model, upstream_model,
-                        request_id, input_tokens_estimate, retry_count
+                        request_id, input_tokens_estimate, retry_count, adapter
                     )
                     failures.append({"provider": provider["name"], "error": message})
                     logging.warning("provider=%s failure=%s", provider["name"], message)
@@ -325,7 +329,7 @@ class Handler(BaseHTTPRequestHandler):
                     latency_ms = int((time.monotonic() - started) * 1000)
                     STORE.mark_failure(
                         provider["name"], message, latency_ms, requested_model, upstream_model,
-                        request_id, input_tokens_estimate, retry_count
+                        request_id, input_tokens_estimate, retry_count, adapter
                     )
                     failures.append({"provider": provider["name"], "error": message})
                     logging.exception("provider=%s unexpected failure", provider["name"])
@@ -344,6 +348,7 @@ class Handler(BaseHTTPRequestHandler):
         request_id: str,
         input_tokens_estimate: int,
         retry_count: int,
+        adapter: str,
     ) -> str:
         iterator = response.iter_bytes()
         prime: list[bytes] = []
@@ -357,10 +362,10 @@ class Handler(BaseHTTPRequestHandler):
                 prime_size += len(chunk)
                 outcome, message = inspect_sse_prime(b"".join(prime))
                 if outcome == "error":
-                    error = compact_error(message or "Responses SSE failure")
+                    error = compact_error(message or "Upstream SSE failure")
                     STORE.mark_failure(
                         provider["name"], error, latency_ms, requested_model, upstream_model,
-                        request_id, input_tokens_estimate, retry_count
+                        request_id, input_tokens_estimate, retry_count, adapter
                     )
                     logging.warning("provider=%s semantic_failure=%s", provider["name"], error)
                     return "retry"
@@ -379,12 +384,13 @@ class Handler(BaseHTTPRequestHandler):
                     request_id,
                     input_tokens_estimate,
                     retry_count,
+                    adapter,
                 )
                 return "retry"
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as error:
             STORE.mark_failure(
                 provider["name"], compact_error(str(error)), latency_ms, requested_model, upstream_model,
-                request_id, input_tokens_estimate, retry_count
+                request_id, input_tokens_estimate, retry_count, adapter
             )
             return "retry"
 
@@ -392,11 +398,12 @@ class Handler(BaseHTTPRequestHandler):
         self._copy_response_headers(response, streaming=True)
         self.send_header("Transfer-Encoding", "chunked")
         # 渠道名常含中文，必须先转为 latin-1 安全值再写入响应头
+        self.send_header("X-Switch-Local-Proxy-Provider", header_latin1(provider["name"]))
         self.send_header("X-Codex-Key-Provider", header_latin1(provider["name"]))
         self.end_headers()
         STORE.mark_success(
             provider["name"], latency_ms, requested_model, upstream_model,
-            request_id, input_tokens_estimate, retry_count
+            request_id, input_tokens_estimate, retry_count, adapter
         )
         try:
             for chunk in chain(prime, iterator):
@@ -416,6 +423,7 @@ class Handler(BaseHTTPRequestHandler):
                 request_id,
                 input_tokens_estimate,
                 retry_count,
+                adapter,
             )
             logging.warning("provider=%s stream_failure=%s", provider["name"], error)
         return "sent"
@@ -426,13 +434,17 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(b"\r\n")
         self.wfile.flush()
 
-    def _upstream_headers(self, api_key: str) -> dict[str, str]:
+    def _upstream_headers(self, api_key: str, adapter: str) -> dict[str, str]:
         headers = {
             name: value
             for name, value in self.headers.items()
             if name.lower() not in HOP_BY_HOP_HEADERS
         }
         headers["Authorization"] = f"Bearer {api_key}"
+        if adapter == ANTHROPIC_MESSAGES_ADAPTER:
+            headers["X-Api-Key"] = api_key
+            if not any(name.lower() == "anthropic-version" for name in headers):
+                headers["anthropic-version"] = "2023-06-01"
         headers["Content-Type"] = "application/json"
         headers["Accept-Encoding"] = "identity"
         return headers
@@ -442,9 +454,13 @@ class Handler(BaseHTTPRequestHandler):
         semantic = inspect_responses_payload(body)
         return compact_error(semantic or f"Upstream HTTP {status_code}")
 
-    def _send_upstream_buffered(self, response: httpx.Response, body: bytes) -> None:
+    def _send_upstream_buffered(
+        self, response: httpx.Response, body: bytes, provider_name: str
+    ) -> None:
         self.send_response(response.status_code)
         self._copy_response_headers(response, streaming=False)
+        self.send_header("X-Switch-Local-Proxy-Provider", header_latin1(provider_name))
+        self.send_header("X-Codex-Key-Provider", header_latin1(provider_name))
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)

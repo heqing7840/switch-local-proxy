@@ -4,7 +4,7 @@
 
 A local AI API proxy with prioritized key routing, automatic failover, retries, cooldowns, and real-time provider monitoring.
 
-The current adapter accepts OpenAI Responses-compatible requests. The routing core is provider-neutral, so additional adapters such as Anthropic Messages can be added without changing the key health and failover model.
+The proxy accepts OpenAI Responses and Anthropic Messages-compatible requests. Both adapters share the same provider priority, health, retry, cooldown, and monitoring model.
 
 ## Features
 
@@ -12,6 +12,7 @@ The current adapter accepts OpenAI Responses-compatible requests. The routing co
 - One same-provider retry for an HTTP 502 before failover.
 - Temporary cooldowns with automatic recovery probes.
 - Streaming SSE early-error detection before forwarding output.
+- OpenAI Responses and Anthropic Messages pass-through adapters.
 - Local dashboard for provider status, latency, failures, key hints, model routing, and request history.
 - Add, edit, delete, enable, disable, reorder, and restore providers from the dashboard.
 - No database or cloud control plane. Runtime state stays on the local machine.
@@ -52,6 +53,27 @@ chmod 600 key.txt
 ```
 
 The dashboard opens on the local machine. Client applications should point their OpenAI-compatible base URL to the local `/v1` endpoint. They do not need the upstream provider keys; the proxy reads those only from the local ignored `key.txt`.
+
+## Claude Code
+
+Claude Code can use the local Anthropic Messages adapter without receiving an upstream provider key:
+
+```bash
+export ANTHROPIC_BASE_URL=http://127.0.0.1:15722
+export ANTHROPIC_AUTH_TOKEN=local-proxy
+claude
+```
+
+`local-proxy` is only a non-secret local placeholder. Switch Local Proxy removes the client credential and injects the selected provider key when forwarding the request. Run `/status` inside Claude Code to verify that the Anthropic base URL points to the local service.
+
+To persist the configuration, add the same values to the `env` object in `~/.claude/settings.json`. Do not put real upstream credentials in a project-level Claude settings file.
+
+Supported Anthropic paths:
+
+- `POST /v1/messages`
+- `POST /v1/messages/count_tokens`
+
+The adapter preserves Anthropic headers such as `anthropic-version` and `anthropic-beta`, replaces the model with `forced_model`, and supports Anthropic streaming SSE events.
 
 ## Import Existing Keys
 
@@ -100,7 +122,9 @@ The proxy does not retry after productive streaming output has already reached t
 
 ## Compatibility
 
-This release implements the OpenAI Responses-compatible `/v1/responses` path and is optimized for local single-user use. Claude, Gemini, or other clients that use a different wire protocol need a dedicated adapter before they can connect directly.
+This release implements pass-through adapters for OpenAI Responses and Anthropic Messages. The configured upstream must support the wire protocol used by the client. An OpenAI-only upstream cannot serve Claude Code through this proxy without a separate request/response translation layer. Gemini and other protocols still require dedicated adapters.
+
+Claude Code gateway configuration follows the [official Claude Code LLM gateway guide](https://code.claude.com/docs/en/llm-gateway-connect). Anthropic request paths and headers follow the [Messages API reference](https://platform.claude.com/docs/en/api/messages/create).
 
 ## Security
 

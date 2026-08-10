@@ -307,7 +307,7 @@
         document.querySelector("#available").textContent = `${ready} / ${data.providers.length}`;
         document.querySelector("#current").textContent = data.current_provider || t("status.noRequest");
         document.querySelector("#uptime").textContent = ago(data.uptime_seconds);
-        document.querySelector("#endpoint").textContent = `127.0.0.1:15722 · ${data.forced_model || "-"}`;
+        document.querySelector("#endpoint").textContent = `127.0.0.1:15722 · ${data.forced_model || "-"} · Responses + Messages`;
         const cooldown = document.querySelector("#cooldown");
         if (document.activeElement !== cooldown) cooldown.value = Math.round(data.cooldown_seconds / 60);
         document.querySelector("#providers").innerHTML = data.providers.map((p, index) => `
@@ -338,7 +338,7 @@
           <div class="event">
             <div>${eventTime(item.at)}</div>
             <div>${esc(item.provider)}</div>
-            <div><div>${esc(item.requested_model && item.model && item.requested_model !== item.model ? `${item.requested_model} → ${item.model}` : (item.model || item.requested_model || "-"))}</div><div class="subtle">${t("history.inputEstimate", {value:item.input_estimator_version === 2 ? formatTokens(item.input_tokens_estimate) : "-"})}${item.retry_count ? ` · ${t("history.retryCount", {value:item.retry_count})}` : ""}</div></div>
+            <div><div>${esc(item.requested_model && item.model && item.requested_model !== item.model ? `${item.requested_model} → ${item.model}` : (item.model || item.requested_model || "-"))}</div><div class="subtle">${item.adapter === "anthropic_messages" ? "Anthropic Messages" : "OpenAI Responses"} · ${t("history.inputEstimate", {value:item.input_estimator_version === 2 ? formatTokens(item.input_tokens_estimate) : "-"})}${item.retry_count ? ` · ${t("history.retryCount", {value:item.retry_count})}` : ""}</div></div>
             <div class="result ${item.result}">${item.result === "success" ? t("history.success") : t("history.failure")}</div>
             <div>${item.latency_ms == null ? "-" : `${item.latency_ms} ${t("unit.milliseconds")}`}</div>
             <div class="error">${esc(item.message === "请求成功" ? t("history.requestSucceeded") : item.message)}</div>
