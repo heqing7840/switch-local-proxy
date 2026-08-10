@@ -666,6 +666,11 @@ class ProxyCoreTests(unittest.TestCase):
             self.assertEqual(response.status, 200)
             self.assertEqual(data["brandName"], "Switch Local Proxy")
             self.assertEqual(data["language.simplifiedChinese"], "简体中文")
+            self.assertEqual(
+                data["dialog.protocolSupport"],
+                "Supported only for GPT/Codex (OpenAI Responses) and Claude "
+                "(Anthropic Messages). Other API protocols are not supported.",
+            )
         finally:
             connection.close()
             httpd.shutdown()

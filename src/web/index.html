@@ -112,6 +112,7 @@
       .field input { width: 100%; height: 40px; border: 1px solid #cbd0d7; border-radius: 6px; padding: 0 10px; outline: none; }
       .field input:focus { border-color: #168f61; box-shadow: 0 0 0 3px rgba(22, 143, 97, .12); }
       .field-help { color: #777e88; font-size: 12px; line-height: 1.45; }
+      .protocol-support { margin: -2px 0 16px; color: #4f5965; font-size: 12px; line-height: 1.5; }
       .dialog-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 22px; }
       .dialog-actions-right { display: flex; gap: 8px; margin-left: auto; }
       @media (max-width: 900px) {
@@ -210,6 +211,7 @@
           <label for="provider-name" data-i18n="dialog.providerName">Channel Name</label>
           <input id="provider-name" name="name" maxlength="80" autocomplete="off" required />
         </div>
+        <div class="protocol-support" data-i18n="dialog.protocolSupport">Supported only for GPT/Codex (OpenAI Responses) and Claude (Anthropic Messages). Other API protocols are not supported.</div>
         <div class="field">
           <label for="provider-key" data-i18n="dialog.apiKey">API Key</label>
           <input id="provider-key" name="key" type="password" autocomplete="new-password" />

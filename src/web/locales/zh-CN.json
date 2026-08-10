@@ -54,6 +54,7 @@
   "dialog.close": "关闭",
   "dialog.providerName": "渠道名称",
   "dialog.apiKey": "API Key",
+  "dialog.protocolSupport": "仅支持 GPT/Codex（OpenAI Responses）和 Claude（Anthropic Messages）；不支持其它 API 协议。",
   "dialog.currentKey": "当前密钥：{key}",
   "dialog.keyHelpAdd": "密钥仅保存在本机，不会在页面或状态接口中显示。",
   "dialog.keyHelpEdit": "留空表示不修改现有密钥；密钥不会被页面读取或回显。",

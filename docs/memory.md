@@ -98,3 +98,8 @@
 - 验证：安全审查复现了跨站 `text/plain` 请求可调用本机接口、Cookie 可被转发、上游错误可持久化凭据占位值，以及 SSE 文本误判；界面动态值转义检查通过。
 - 最终结果：增加 Origin 校验、16 MiB 请求上限、30 秒读取超时、Cookie 隔离、错误脱敏和结构化 SSE 判断；`privacy-check` 扫描工作区、Git 全历史和 `dist/` 白名单，且不输出命中原文。
 - 发布规则：`./run.sh verify` 必须包含隐私扫描；任何命中都阻止公开推送，不能通过扩大忽略范围绕过真实跟踪或历史泄漏。
+
+## 2026-08-11 - Provider 协议范围提示
+
+- 问题：只显示“渠道名称”和 API Key 容易让使用者把 Provider 误认为支持所有模型或 API 协议。
+- 最终结果：添加/编辑弹窗固定标注当前仅支持 GPT/Codex 的 OpenAI Responses 和 Claude 的 Anthropic Messages；Provider 不按客户端类型绑定，请求路径选择适配器。
