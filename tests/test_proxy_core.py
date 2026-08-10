@@ -26,7 +26,7 @@ from proxy_core import (  # noqa: E402
     should_retry_same_provider,
 )
 import server  # noqa: E402
-from server import Handler, header_latin1  # noqa: E402
+from server import MAX_REQUEST_BODY_BYTES, Handler, compact_error, header_latin1  # noqa: E402
 
 
 class ProxyCoreTests(unittest.TestCase):
@@ -54,6 +54,8 @@ class ProxyCoreTests(unittest.TestCase):
                         "x_api_key": self.headers.get("X-Api-Key"),
                         "anthropic_version": self.headers.get("anthropic-version"),
                         "anthropic_beta": self.headers.get("anthropic-beta"),
+                        "cookie": self.headers.get("Cookie"),
+                        "referer": self.headers.get("Referer"),
                         "body": json.loads(body),
                     }
                 )
@@ -110,6 +112,8 @@ class ProxyCoreTests(unittest.TestCase):
                             "X-Api-Key": "local-only-key",
                             "Anthropic-Version": "2023-06-01",
                             "anthropic-beta": "test-feature",
+                            "Cookie": "local-session=must-not-leave-loopback",
+                            "Referer": "http://127.0.0.1:15722/",
                         },
                     )
                     response = connection.getresponse()
@@ -132,6 +136,8 @@ class ProxyCoreTests(unittest.TestCase):
                     self.assertEqual(request["x_api_key"], "sk-upstream-provider")
                     self.assertEqual(request["anthropic_version"], "2023-06-01")
                     self.assertEqual(request["anthropic_beta"], "test-feature")
+                    self.assertIsNone(request["cookie"])
+                    self.assertIsNone(request["referer"])
                     self.assertEqual(request["body"]["model"], "gpt-5.6-sol")
                 events = store.status()["events"]
                 self.assertEqual(events[0]["adapter"], ANTHROPIC_MESSAGES_ADAPTER)
@@ -307,6 +313,24 @@ class ProxyCoreTests(unittest.TestCase):
         )
         self.assertEqual(outcome, "error")
         self.assertEqual(message, "Overloaded")
+        ordinary_text, _ = inspect_sse_prime(
+            b'event: response.output_text.delta\ndata: {"type":"response.output_text.delta",'
+            b'"delta":"ordinary text containing event: error"}\n\n'
+        )
+        self.assertEqual(ordinary_text, "productive")
+
+    def test_error_compaction_redacts_provider_credentials(self):
+        redacted = compact_error("upstream echoed Bearer sk-sensitive-provider-key")
+        self.assertNotIn("sk-sensitive-provider-key", redacted)
+        self.assertIn("[redacted-secret]", redacted)
+
+    def test_key_file_errors_do_not_expose_local_paths(self):
+        with tempfile.TemporaryDirectory() as directory:
+            key_file = Path(directory) / "private" / "key.txt"
+            store = ProxyStore(Path(directory) / "state", key_file)
+            status = store.status()
+            self.assertEqual(status["key_error"], "key file could not be read")
+            self.assertNotIn(str(key_file), json.dumps(status))
 
     def test_json_error_envelope_is_detected(self):
         self.assertEqual(
@@ -552,6 +576,83 @@ class ProxyCoreTests(unittest.TestCase):
                 httpd.server_close()
                 thread.join(timeout=2)
                 server.STORE = previous_store
+
+    def test_cross_origin_mutation_is_rejected_before_provider_change(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text("existing:sk-existing-api\n", encoding="utf-8")
+            store = ProxyStore(root / "state", key_file)
+            previous_store = server.STORE
+            server.STORE = store
+            httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", httpd.server_port, timeout=2
+            )
+            try:
+                connection.request(
+                    "POST",
+                    "/api/providers",
+                    body=json.dumps({"name": "blocked", "key": "sk-blocked-api"}),
+                    headers={
+                        "Content-Type": "text/plain",
+                        "Origin": "https://attacker.invalid",
+                    },
+                )
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, 403)
+                self.assertNotIn("blocked", store.load_keys())
+            finally:
+                connection.close()
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=2)
+                server.STORE = previous_store
+
+    def test_wrong_loopback_origin_port_is_rejected_with_response(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        connection = http.client.HTTPConnection("127.0.0.1", httpd.server_port, timeout=2)
+        try:
+            connection.request(
+                "POST",
+                "/api/reset-all",
+                body=b"{}",
+                headers={
+                    "Content-Type": "application/json",
+                    "Origin": "http://127.0.0.1:65534",
+                },
+            )
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 403)
+        finally:
+            connection.close()
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=2)
+
+    def test_oversized_request_is_rejected_before_body_read(self):
+        httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+        thread.start()
+        connection = http.client.HTTPConnection("127.0.0.1", httpd.server_port, timeout=2)
+        try:
+            connection.putrequest("POST", "/v1/responses")
+            connection.putheader("Content-Length", str(MAX_REQUEST_BODY_BYTES + 1))
+            connection.endheaders()
+            response = connection.getresponse()
+            response.read()
+            self.assertEqual(response.status, 413)
+        finally:
+            connection.close()
+            httpd.shutdown()
+            httpd.server_close()
+            thread.join(timeout=2)
 
     def test_english_locale_is_served_with_new_brand(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)

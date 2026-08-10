@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import socket
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -63,8 +64,10 @@ CLIENT = httpx.Client(
 HOP_BY_HOP_HEADERS = {
     "connection",
     "keep-alive",
+    "origin",
     "proxy-authenticate",
     "proxy-authorization",
+    "referer",
     "te",
     "trailers",
     "transfer-encoding",
@@ -73,11 +76,16 @@ HOP_BY_HOP_HEADERS = {
     "host",
     "authorization",
     "x-api-key",
+    "cookie",
 }
+MAX_REQUEST_BODY_BYTES = 16 * 1024 * 1024
+LOCAL_ORIGINS = {"127.0.0.1", "localhost", "::1"}
+SECRET_TEXT_RE = re.compile(r"(?i)(?:bearer\s+)?sk-[A-Za-z0-9_-]{8,}")
 
 
 def compact_error(value: str) -> str:
-    return " ".join(value.split())[:300]
+    compacted = " ".join(value.split())
+    return SECRET_TEXT_RE.sub("[redacted-secret]", compacted)[:300]
 
 
 def header_latin1(value: str) -> str:
@@ -92,6 +100,10 @@ def header_latin1(value: str) -> str:
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
     server_version = "SwitchLocalProxy/0.4"
+
+    def setup(self) -> None:
+        super().setup()
+        self.connection.settimeout(30)
 
     def log_message(self, format: str, *args: object) -> None:
         logging.info("client=%s " + format, self.client_address[0], *args)
@@ -116,6 +128,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": {"message": "Not found"}})
 
     def do_POST(self) -> None:
+        if not self._request_is_local():
+            return
+        if not self._content_length_allowed():
+            return
         parsed = urlparse(self.path)
         if parsed.path == "/api/providers":
             body = self._read_json()
@@ -153,6 +169,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": {"message": "Not found"}})
 
     def do_PUT(self) -> None:
+        if not self._request_is_local():
+            return
+        if not self._content_length_allowed():
+            return
         path = urlparse(self.path).path
         if path == "/api/providers":
             body = self._read_json()
@@ -185,6 +205,10 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": {"message": "Not found"}})
 
     def do_DELETE(self) -> None:
+        if not self._request_is_local():
+            return
+        if not self._content_length_allowed():
+            return
         if urlparse(self.path).path != "/api/providers":
             self._send_json(404, {"error": {"message": "Not found"}})
             return
@@ -205,6 +229,34 @@ class Handler(BaseHTTPRequestHandler):
     def _read_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0"))
         return self.rfile.read(length) if length else b""
+
+    def _request_is_local(self) -> bool:
+        origin = self.headers.get("Origin")
+        if not origin:
+            return True
+        parsed = urlparse(origin)
+        if parsed.scheme not in {"http", "https"} or parsed.hostname not in LOCAL_ORIGINS:
+            self._send_json(403, {"error": {"message": "Cross-origin requests are not allowed"}})
+            return False
+        try:
+            allowed_port = parsed.port in {None, PORT}
+        except ValueError:
+            allowed_port = False
+        if not allowed_port:
+            self._send_json(403, {"error": {"message": "Cross-origin requests are not allowed"}})
+            return False
+        return True
+
+    def _content_length_allowed(self) -> bool:
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+        except ValueError:
+            self._send_json(400, {"error": {"message": "Invalid Content-Length"}})
+            return False
+        if length < 0 or length > MAX_REQUEST_BODY_BYTES:
+            self._send_json(413, {"error": {"message": "Request body is too large"}})
+            return False
+        return True
 
     def _read_json(self) -> dict:
         try:

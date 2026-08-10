@@ -176,50 +176,57 @@ def inspect_responses_payload(payload: bytes) -> str | None:
 
 def inspect_sse_prime(payload: bytes) -> tuple[str, str | None]:
     text = payload.decode("utf-8", errors="replace")
-    lowered = text.lower()
+    event_names = {
+        line.split(":", 1)[1].strip().lower()
+        for line in text.splitlines()
+        if line.lower().startswith("event:") and ":" in line
+    }
+    data_objects = []
+    for raw_line in text.splitlines():
+        if not raw_line.startswith("data:"):
+            continue
+        try:
+            decoded = json.loads(raw_line[5:].strip())
+        except json.JSONDecodeError:
+            continue
+        if isinstance(decoded, dict):
+            data_objects.append(decoded)
+    data_types = {str(item.get("type", "")).lower() for item in data_objects}
+    failed_status = any(
+        str(item.get("status", "")).lower() == "failed" for item in data_objects
+    )
     if (
-        "event: error" in lowered
-        or "event: response.failed" in lowered
-        or '"type":"error"' in lowered.replace(" ", "")
-        or '"type":"response.failed"' in lowered.replace(" ", "")
-        or '"status":"failed"' in lowered.replace(" ", "")
+        event_names & {"error", "response.failed"}
+        or data_types & {"error", "response.failed"}
+        or failed_status
     ):
         message = "Responses SSE failure"
-        for raw_line in text.splitlines():
-            if not raw_line.startswith("data:"):
-                continue
-            candidate = raw_line[5:].strip()
-            try:
-                decoded = json.loads(candidate)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(decoded, dict):
-                error = decoded.get("error")
-                response = decoded.get("response")
-                if isinstance(error, dict):
-                    message = str(error.get("message") or error.get("code") or message)
-                    break
-                if isinstance(response, dict) and isinstance(response.get("error"), dict):
-                    message = str(response["error"].get("message") or message)
-                    break
+        for decoded in data_objects:
+            error = decoded.get("error")
+            response = decoded.get("response")
+            if isinstance(error, dict):
+                message = str(error.get("message") or error.get("code") or message)
+                break
+            if isinstance(response, dict) and isinstance(response.get("error"), dict):
+                message = str(response["error"].get("message") or message)
+                break
         return "error", message
 
-    productive_markers = (
-        "event: response.output_text.delta",
-        "event: response.function_call_arguments.delta",
-        "event: response.completed",
-        "event: content_block_delta",
-        "event: message_delta",
-        "event: message_stop",
-        '"type":"response.output_text.delta"',
-        '"type":"response.function_call_arguments.delta"',
-        '"type":"response.completed"',
-        '"type":"content_block_delta"',
-        '"type":"message_delta"',
-        '"type":"message_stop"',
-    )
-    compact = lowered.replace(" ", "")
-    if any(marker in lowered or marker in compact for marker in productive_markers):
+    if event_names & {
+        "response.output_text.delta",
+        "response.function_call_arguments.delta",
+        "response.completed",
+        "content_block_delta",
+        "message_delta",
+        "message_stop",
+    } or data_types & {
+        "response.output_text.delta",
+        "response.function_call_arguments.delta",
+        "response.completed",
+        "content_block_delta",
+        "message_delta",
+        "message_stop",
+    }:
         return "productive", None
     return "pending", None
 
@@ -657,9 +664,9 @@ class ProxyStore:
         try:
             keys = self.load_keys()
             key_error = None
-        except OSError as error:
+        except OSError:
             keys = {}
-            key_error = str(error)
+            key_error = "key file could not be read"
         with self.lock:
             last_success_provider = None
             if self.runtime and any(

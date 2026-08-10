@@ -18,7 +18,7 @@ fi
 PORT="15722"
 
 usage() {
-  echo "Usage: ./run.sh build|verify|doctor|repair|import-keys SOURCE|install|migrate|start|stop|status|open"
+  echo "Usage: ./run.sh build|privacy-check|verify|doctor|repair|import-keys SOURCE|install|migrate|start|stop|status|open"
 }
 
 health_check() {
@@ -79,6 +79,14 @@ PY
 }
 
 build() {
+  "$PYTHON" - "$DIST" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+dist = Path(sys.argv[1])
+if dist.exists():
+    shutil.rmtree(dist)
+PY
   mkdir -p "$DIST/web" "$DIST/support"
   cp "$ROOT/src/proxy_core.py" "$DIST/proxy_core.py"
   cp "$ROOT/src/server.py" "$DIST/server.py"
@@ -88,6 +96,16 @@ build() {
   cp "$ROOT/requirements.txt" "$DIST/requirements.txt"
   chmod 600 "$DIST/proxy_core.py" "$DIST/server.py"
   echo "Built: $DIST"
+}
+
+clean_dist_bytecode() {
+  "$PYTHON" - "$DIST" <<'PY'
+import shutil
+import sys
+from pathlib import Path
+for path in Path(sys.argv[1]).rglob("__pycache__"):
+    shutil.rmtree(path)
+PY
 }
 
 verify() {
@@ -122,16 +140,7 @@ assert en["brandName"] == "Switch Local Proxy"
 assert en["language.simplifiedChinese"] == "简体中文"
 print(f"Locales verified: {len(en)} keys")
 PY
-  if rg -n 'sk-[A-Za-z0-9_-]{10,}|OPENAI_API_KEY[[:space:]]*=' "$DIST"; then
-    echo "Secret-like content found in dist" >&2
-    exit 1
-  fi
-  if git -C "$ROOT" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-    if git -C "$ROOT" grep -n -E 'sk-[A-Za-z0-9_-]{30,}|/Users/|harin\.tokenha|dashscope\.aliyuncs' -- . ':!run.sh'; then
-      echo "Private or secret-like content found in tracked files" >&2
-      exit 1
-    fi
-  fi
+  "$PYTHON" "$ROOT/support/privacy_scan.py" --root "$ROOT"
   echo "Verification passed"
 }
 
@@ -177,6 +186,7 @@ install_service() {
     fi
     return 1
   fi
+  clean_dist_bytecode
   echo "Installed: $PLIST"
   rm -f "$LEGACY_PLIST"
 }
@@ -221,6 +231,7 @@ import_keys() {
 
 case "${1:-}" in
   build) build ;;
+  privacy-check) "$PYTHON" "$ROOT/support/privacy_scan.py" --root "$ROOT" ;;
   verify) verify ;;
   doctor) doctor ;;
   repair) install_service ;;

@@ -17,6 +17,8 @@ The proxy accepts OpenAI Responses and Anthropic Messages-compatible requests. B
 - Add, edit, delete, enable, disable, reorder, and restore providers from the dashboard.
 - No database or cloud control plane. Runtime state stays on the local machine.
 - The service binds to loopback by default and runs as a macOS background LaunchAgent.
+- Cross-origin browser writes are rejected, request bodies are capped, and client cookies are never forwarded upstream.
+- The release gate scans tracked files, new unignored files, all Git history, and the `dist/` allowlist without printing matched values.
 
 ## Requirements
 
@@ -113,6 +115,7 @@ The proxy does not retry after productive streaming output has already reached t
 | Command | Purpose |
 | --- | --- |
 | `./run.sh verify` | Run tests, syntax checks, locale validation, and build `dist/` |
+| `./run.sh privacy-check` | Scan the working tree, Git history, and `dist/` for private data |
 | `./run.sh install` | Install or upgrade the background LaunchAgent |
 | `./run.sh doctor` | Check configuration, permissions, service identity, and health |
 | `./run.sh repair` | Rebuild and reinstall with rollback on failed health checks |
@@ -128,7 +131,7 @@ Claude Code gateway configuration follows the [official Claude Code LLM gateway 
 
 ## Security
 
-The service listens on loopback by default. Do not expose it to a network without adding authentication and access controls. Do not put real keys, private upstream URLs, or client credentials in source files, documentation, screenshots, logs, or issue reports.
+The service listens on loopback by default and rejects browser requests whose `Origin` is not local. Do not expose it to a network without adding authentication and access controls. Do not put real keys, private upstream URLs, or client credentials in source files, documentation, screenshots, logs, or issue reports. Run `./run.sh privacy-check` before every public push.
 
 ## License
 

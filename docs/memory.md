@@ -91,3 +91,10 @@
 - 最终方案：新增 `anthropic_messages` 适配器，支持 Messages 与 Count Tokens；移除客户端占位认证并注入 Provider Key，保留 Anthropic 协议头，复用现有重试、冷却、SSE 预检和事件记录。
 - 兼容边界：这是 Anthropic 协议透传，不是 Anthropic 与 OpenAI 的请求/响应转换。上游不支持 Messages 时，代理不能凭空让 Claude Code 工作。
 - 安全：Claude Code 可使用 `ANTHROPIC_AUTH_TOKEN=local-proxy` 作为非敏感本地占位值，真实 Provider Key 仍只存在于被忽略且权限为 `600` 的 `key.txt`。
+
+## 2026-08-10 - 公共发布隐私与本机接口加固
+
+- 问题：只扫描当前 `dist/` 和跟踪文件不足以证明公开仓库安全；Git 历史、未忽略的新文件、运行快照及本机跨站请求都可能造成泄漏或滥用。
+- 验证：安全审查复现了跨站 `text/plain` 请求可调用本机接口、Cookie 可被转发、上游错误可持久化凭据占位值，以及 SSE 文本误判；界面动态值转义检查通过。
+- 最终结果：增加 Origin 校验、16 MiB 请求上限、30 秒读取超时、Cookie 隔离、错误脱敏和结构化 SSE 判断；`privacy-check` 扫描工作区、Git 全历史和 `dist/` 白名单，且不输出命中原文。
+- 发布规则：`./run.sh verify` 必须包含隐私扫描；任何命中都阻止公开推送，不能通过扩大忽略范围绕过真实跟踪或历史泄漏。
