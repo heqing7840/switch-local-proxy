@@ -344,10 +344,23 @@ class ProxyStore:
         if not isinstance(saved, dict):
             saved = {}
         runtime: dict[str, dict[str, Any]] = {}
+        cleared_context_cooldown = False
         for provider in self.settings["providers"]:
             name = provider["name"]
             item = saved.get(name, {})
-            runtime[name] = self._runtime_state(item)
+            state = self._runtime_state(item)
+            if state["cooldown_until"] and is_context_error(state["last_error"]):
+                state["cooldown_until"] = 0
+                cleared_context_cooldown = True
+            runtime[name] = state
+        if cleared_context_cooldown:
+            atomic_write_json(
+                self.runtime_path,
+                {
+                    name: {key: value for key, value in state.items() if key != "probing"}
+                    for name, state in runtime.items()
+                },
+            )
         return runtime
 
     @staticmethod
@@ -623,16 +636,17 @@ class ProxyStore:
         now = time.time()
         with self.lock:
             state = self.runtime[name]
+            context_failure = bool(input_tokens_estimate and is_context_error(error))
             state.update(
                 {
-                    "cooldown_until": now + self.settings["cooldown_seconds"],
+                    "cooldown_until": 0 if context_failure else now + self.settings["cooldown_seconds"],
                     "last_error": error[:300],
                     "last_failure_at": now,
                     "failure_count": state["failure_count"] + 1,
                     "probing": False,
                 }
             )
-            if input_tokens_estimate and is_context_error(error):
+            if context_failure:
                 current = state["min_context_failure_tokens"]
                 state["min_context_failure_tokens"] = (
                     input_tokens_estimate if not current else min(current, input_tokens_estimate)

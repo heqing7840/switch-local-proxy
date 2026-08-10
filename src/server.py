@@ -21,6 +21,7 @@ from proxy_core import (
     estimate_input_tokens,
     inspect_responses_payload,
     inspect_sse_prime,
+    is_context_error,
     is_retryable_status,
     should_retry_same_provider,
 )
@@ -534,6 +535,17 @@ class Handler(BaseHTTPRequestHandler):
             STORE.release_untried_probe(provider)
 
     def _send_all_unavailable(self, failures: list[dict[str, str]]) -> None:
+        if failures and all(is_context_error(item.get("error", "")) for item in failures):
+            self._send_json(
+                400,
+                {
+                    "error": {
+                        "message": failures[0]["error"],
+                        "type": "context_length_exceeded",
+                    }
+                },
+            )
+            return
         status = STORE.status()
         next_retry = min(
             (

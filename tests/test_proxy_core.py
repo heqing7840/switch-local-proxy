@@ -324,6 +324,42 @@ class ProxyCoreTests(unittest.TestCase):
         self.assertNotIn("sk-sensitive-provider-key", redacted)
         self.assertIn("[redacted-secret]", redacted)
 
+    def test_context_failure_is_recorded_without_cooling_provider(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text("provider:sk-context-test-key\n", encoding="utf-8")
+            store = ProxyStore(root / "state", key_file)
+            store.mark_failure(
+                "provider",
+                "Your input exceeds the context window of this model.",
+                input_tokens_estimate=140000,
+            )
+            state = store.runtime["provider"]
+            self.assertEqual(state["cooldown_until"], 0)
+            self.assertEqual(state["failure_count"], 1)
+            self.assertEqual(state["context_failure_count"], 1)
+
+    def test_existing_context_cooldown_is_cleared_on_startup(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text("provider:sk-context-test-key\n", encoding="utf-8")
+            store = ProxyStore(root / "state", key_file)
+            store.runtime_path.write_text(
+                json.dumps(
+                    {
+                        "provider": {
+                            "cooldown_until": 9999999999,
+                            "last_error": "Your input exceeds the context window of this model.",
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+            reloaded = ProxyStore(root / "state", key_file)
+            self.assertEqual(reloaded.runtime["provider"]["cooldown_until"], 0)
+
     def test_key_file_errors_do_not_expose_local_paths(self):
         with tempfile.TemporaryDirectory() as directory:
             key_file = Path(directory) / "private" / "key.txt"
