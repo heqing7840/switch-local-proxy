@@ -636,6 +636,41 @@ class ProxyCoreTests(unittest.TestCase):
             httpd.server_close()
             thread.join(timeout=2)
 
+    def test_matching_loopback_alias_origin_is_allowed(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text("existing:sk-existing-api\n", encoding="utf-8")
+            store = ProxyStore(root / "state", key_file)
+            previous_store = server.STORE
+            server.STORE = store
+            httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", httpd.server_port, timeout=2
+            )
+            try:
+                connection.request(
+                    "POST",
+                    "/api/reset-all",
+                    body=b"{}",
+                    headers={
+                        "Host": "local-proxy.invalid:15722",
+                        "Origin": "http://local-proxy.invalid:15722",
+                        "Content-Type": "application/json",
+                    },
+                )
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, 200)
+            finally:
+                connection.close()
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=2)
+                server.STORE = previous_store
+
     def test_oversized_request_is_rejected_before_body_read(self):
         httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
         thread = threading.Thread(target=httpd.serve_forever, daemon=True)

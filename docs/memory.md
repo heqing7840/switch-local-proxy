@@ -103,3 +103,8 @@
 
 - 问题：只显示“渠道名称”和 API Key 容易让使用者把 Provider 误认为支持所有模型或 API 协议。
 - 最终结果：添加/编辑弹窗固定标注当前仅支持 GPT/Codex 的 OpenAI Responses 和 Claude 的 Anthropic Messages；Provider 不按客户端类型绑定，请求路径选择适配器。
+
+## 2026-08-11 - 本机 Host 别名的 Origin 校验
+
+- 问题：管理页通过 `p.a.com:15722` 这类本机 hosts 别名访问时，严格的 loopback 主机名白名单会把正常的渠道开关请求误判为跨站请求并返回 403。
+- 最终结果：带 `Origin` 的请求除标准 loopback 主机名外，也允许与请求 Host 相同的本机别名，端口仍必须匹配本地服务端口；外部 Origin 保持拒绝。

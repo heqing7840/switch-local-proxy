@@ -235,7 +235,12 @@ class Handler(BaseHTTPRequestHandler):
         if not origin:
             return True
         parsed = urlparse(origin)
-        if parsed.scheme not in {"http", "https"} or parsed.hostname not in LOCAL_ORIGINS:
+        request_host = self.headers.get("Host", "").rsplit(":", 1)[0].strip("[]").lower()
+        origin_host = (parsed.hostname or "").lower()
+        if (
+            parsed.scheme not in {"http", "https"}
+            or (origin_host not in LOCAL_ORIGINS and origin_host != request_host)
+        ):
             self._send_json(403, {"error": {"message": "Cross-origin requests are not allowed"}})
             return False
         try:
