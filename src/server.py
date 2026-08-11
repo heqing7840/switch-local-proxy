@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import logging
 import os
 import re
 import socket
+import subprocess
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -32,6 +34,7 @@ from proxy_core import (
 
 APP_DIR = Path(__file__).resolve().parent
 WEB_FILE = APP_DIR / "web" / "index.html"
+UPDATE_ICON_FILE = APP_DIR / "web" / "update.svg"
 LOCALE_DIR = APP_DIR / "web" / "locales"
 VERSION_FILE = APP_DIR.parent / "version.json"
 STATE_DIR = Path(
@@ -119,7 +122,7 @@ class UpdateChecker:
             self.checking = False
             atomic_write_json(self.cache_path, cache)
 HOST = os.environ.get(
-    "SWITCH_LOCAL_PROXY_HOST", os.environ.get("CODEX_KEY_PROXY_HOST", "127.0.0.1")
+    "SWITCH_LOCAL_PROXY_HOST", os.environ.get("CODEX_KEY_PROXY_HOST", "0.0.0.0")
 )
 PORT = int(
     os.environ.get("SWITCH_LOCAL_PROXY_PORT", os.environ.get("CODEX_KEY_PROXY_PORT", "15722"))
@@ -161,6 +164,24 @@ LOCAL_ORIGINS = {"127.0.0.1", "localhost", "::1"}
 SECRET_TEXT_RE = re.compile(r"(?i)(?:bearer\s+)?sk-[A-Za-z0-9_-]{8,}")
 
 
+def local_ipv4_addresses() -> list[str]:
+    addresses = {"127.0.0.1"}
+    try:
+        output = subprocess.run(
+            ["/sbin/ifconfig"], capture_output=True, text=True, timeout=2, check=False
+        ).stdout
+    except (OSError, subprocess.SubprocessError):
+        output = ""
+    for value in re.findall(r"\binet (\d+\.\d+\.\d+\.\d+)\b", output):
+        try:
+            address = ipaddress.ip_address(value)
+        except ValueError:
+            continue
+        if not address.is_unspecified and not address.is_multicast:
+            addresses.add(str(address))
+    return sorted(addresses, key=lambda value: (value == "127.0.0.1", value))
+
+
 def compact_error(value: str) -> str:
     compacted = " ".join(value.split())
     return SECRET_TEXT_RE.sub("[redacted-secret]", compacted)[:300]
@@ -187,9 +208,14 @@ class Handler(BaseHTTPRequestHandler):
         logging.info("client=%s " + format, self.client_address[0], *args)
 
     def do_GET(self) -> None:
+        if not self._management_request_allowed():
+            return
         parsed = urlparse(self.path)
         if parsed.path in {"/", "/index.html"}:
             self._send_bytes(200, WEB_FILE.read_bytes(), "text/html; charset=utf-8")
+            return
+        if parsed.path == "/update.svg":
+            self._send_bytes(200, UPDATE_ICON_FILE.read_bytes(), "image/svg+xml")
             return
         if parsed.path.startswith("/locales/"):
             locale = parsed.path.removeprefix("/locales/").removesuffix(".json")
@@ -201,7 +227,9 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": {"message": "Locale not found"}})
             return
         if parsed.path in {"/api/status", "/api/health"}:
-            self._send_json(200, STORE.status())
+            status = STORE.status()
+            status["local_addresses"] = local_ipv4_addresses()
+            self._send_json(200, status)
             return
         if parsed.path == "/api/update":
             self._send_json(200, UPDATE_CHECKER.status())
@@ -209,11 +237,23 @@ class Handler(BaseHTTPRequestHandler):
         self._send_json(404, {"error": {"message": "Not found"}})
 
     def do_POST(self) -> None:
-        if not self._request_is_local():
+        parsed = urlparse(self.path)
+        adapter = adapter_for_path(parsed.path)
+        if adapter:
+            if not self._browser_origin_allowed():
+                return
+            if not self._content_length_allowed():
+                return
+            client_ip = self.client_address[0]
+            if not STORE.source_allowed_for_any(adapter, client_ip):
+                self._send_json(403, {"error": {"message": "Client source is not allowed"}})
+                return
+            self._proxy_upstream(adapter, client_ip)
+            return
+        if not self._management_request_allowed():
             return
         if not self._content_length_allowed():
             return
-        parsed = urlparse(self.path)
         if parsed.path == "/api/providers":
             body = self._read_json()
             try:
@@ -223,12 +263,15 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("upstream_url", "")),
                     str(body.get("forced_model", "")),
                     str(body.get("protocol", "auto")),
+                    str(body.get("access_policy", "inherit")),
+                    str(body.get("allowed_networks", "")),
+                    str(body.get("model_policy", "inherit")),
                 )
             except ValueError as error:
                 self._send_json(400, {"error": {"message": str(error)}})
                 return
             except OSError:
-                self._send_json(500, {"error": {"message": "密钥文件写入失败"}})
+                self._send_json(500, {"error": {"message": "本机数据库写入失败"}})
                 return
             self._send_json(201, STORE.status())
             return
@@ -249,14 +292,10 @@ class Handler(BaseHTTPRequestHandler):
             STORE.clear_events()
             self._send_json(200, STORE.status())
             return
-        adapter = adapter_for_path(parsed.path)
-        if adapter:
-            self._proxy_upstream(adapter)
-            return
         self._send_json(404, {"error": {"message": "Not found"}})
 
     def do_PUT(self) -> None:
-        if not self._request_is_local():
+        if not self._management_request_allowed():
             return
         if not self._content_length_allowed():
             return
@@ -271,6 +310,9 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("upstream_url"),
                     body.get("forced_model"),
                     body.get("protocol"),
+                    body.get("access_policy"),
+                    body.get("allowed_networks"),
+                    body.get("model_policy"),
                 )
             except KeyError:
                 self._send_json(404, {"error": {"message": "渠道不存在"}})
@@ -279,23 +321,29 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": {"message": str(error)}})
                 return
             except OSError:
-                self._send_json(500, {"error": {"message": "密钥文件写入失败"}})
+                self._send_json(500, {"error": {"message": "本机数据库写入失败"}})
                 return
             self._send_json(200, STORE.status())
             return
         if path == "/api/settings":
             body = self._read_json()
             try:
-                STORE.update_cooldown(int(body.get("cooldown_seconds", 300)))
+                if "cooldown_seconds" in body:
+                    STORE.update_cooldown(int(body.get("cooldown_seconds", 300)))
+                if "access_policy" in body:
+                    STORE.update_access(
+                        str(body.get("access_policy", "local")),
+                        str(body.get("allowed_networks", "")),
+                    )
             except (TypeError, ValueError):
-                self._send_json(400, {"error": {"message": "Invalid cooldown"}})
+                self._send_json(400, {"error": {"message": "Invalid settings"}})
                 return
             self._send_json(200, STORE.status())
             return
         self._send_json(404, {"error": {"message": "Not found"}})
 
     def do_DELETE(self) -> None:
-        if not self._request_is_local():
+        if not self._management_request_allowed():
             return
         if not self._content_length_allowed():
             return
@@ -312,7 +360,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(400, {"error": {"message": str(error)}})
             return
         except OSError:
-            self._send_json(500, {"error": {"message": "密钥文件写入失败"}})
+            self._send_json(500, {"error": {"message": "本机数据库写入失败"}})
             return
         self._send_json(200, STORE.status())
 
@@ -320,7 +368,7 @@ class Handler(BaseHTTPRequestHandler):
         length = int(self.headers.get("Content-Length", "0"))
         return self.rfile.read(length) if length else b""
 
-    def _request_is_local(self) -> bool:
+    def _browser_origin_allowed(self) -> bool:
         origin = self.headers.get("Origin")
         if not origin:
             return True
@@ -342,6 +390,16 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    def _management_request_allowed(self) -> bool:
+        try:
+            is_loopback = ipaddress.ip_address(self.client_address[0]).is_loopback
+        except ValueError:
+            is_loopback = False
+        if not is_loopback:
+            self._send_json(403, {"error": {"message": "Management access is local only"}})
+            return False
+        return self._browser_origin_allowed()
+
     def _content_length_allowed(self) -> bool:
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -360,7 +418,7 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return value if isinstance(value, dict) else {}
 
-    def _proxy_upstream(self, adapter: str) -> None:
+    def _proxy_upstream(self, adapter: str, client_ip: str) -> None:
         raw_body = self._read_body()
         try:
             request_json = json.loads(raw_body)
@@ -374,7 +432,7 @@ class Handler(BaseHTTPRequestHandler):
         requested_model = str(request_json.get("model") or "")
         request_id = f"{time.time_ns():x}"
         upstream_path = self.path
-        providers = STORE.eligible_providers(adapter)
+        providers = STORE.eligible_providers(adapter, client_ip)
         if not providers:
             STORE.set_active_provider(None)
             self._send_all_unavailable([])
@@ -383,9 +441,11 @@ class Handler(BaseHTTPRequestHandler):
         failures: list[dict[str, str]] = []
         for index, provider in enumerate(providers):
             STORE.set_active_provider(provider["name"])
-            upstream_model = STORE.provider_model(provider)
+            model_override = STORE.provider_model(provider, requested_model)
+            upstream_model = model_override or requested_model
             provider_payload = dict(request_json)
-            provider_payload["model"] = upstream_model
+            if model_override:
+                provider_payload["model"] = model_override
             payload = json.dumps(provider_payload, ensure_ascii=False, separators=(",", ":")).encode()
             input_tokens_estimate = estimate_input_tokens(payload)
             upstream_url = STORE.provider_upstream_url(provider) + upstream_path[3:]

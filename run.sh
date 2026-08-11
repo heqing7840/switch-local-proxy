@@ -103,6 +103,7 @@ PY
   cp "$ROOT/src/proxy_core.py" "$DIST/proxy_core.py"
   cp "$ROOT/src/server.py" "$DIST/server.py"
   cp "$ROOT/src/web/index.html" "$DIST/web/index.html"
+  cp "$ROOT/src/web/update.svg" "$DIST/web/update.svg"
   cp "$ROOT/version.json" "$DIST/version.json"
   mkdir -p "$DIST/web/locales"
   cp "$ROOT/src/web/locales/"*.json "$DIST/web/locales/"

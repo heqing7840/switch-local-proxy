@@ -25,6 +25,7 @@ from proxy_core import (  # noqa: E402
     is_retryable_status,
     parse_key_text,
     parse_private_settings,
+    source_ip_allowed,
     should_retry_same_provider,
 )
 import server  # noqa: E402
@@ -183,11 +184,11 @@ class ProxyCoreTests(unittest.TestCase):
                     self.assertEqual(request["anthropic_beta"], "test-feature")
                     self.assertIsNone(request["cookie"])
                     self.assertIsNone(request["referer"])
-                    self.assertEqual(request["body"]["model"], "gpt-5.6-sol")
+                    self.assertEqual(request["body"]["model"], "claude-sonnet-4-6")
                 events = store.status()["events"]
                 self.assertEqual(events[0]["adapter"], ANTHROPIC_MESSAGES_ADAPTER)
                 self.assertEqual(events[0]["requested_model"], "claude-sonnet-4-6")
-                self.assertEqual(events[0]["model"], "gpt-5.6-sol")
+                self.assertEqual(events[0]["model"], "claude-sonnet-4-6")
             finally:
                 proxy.shutdown()
                 proxy.server_close()
@@ -558,6 +559,105 @@ class ProxyCoreTests(unittest.TestCase):
                 store.provider_upstream_url(chat[0]),
                 "https://chat.example.invalid/v1beta/openai",
             )
+
+    def test_source_ip_policies_and_channel_override(self):
+        self.assertTrue(source_ip_allowed("127.0.0.1", "local"))
+        self.assertFalse(source_ip_allowed("192.168.1.20", "local"))
+        self.assertTrue(source_ip_allowed("192.168.1.20", "lan"))
+        self.assertTrue(source_ip_allowed("2.2.2.2", "cidr", "2.2.2.0/24"))
+        self.assertFalse(source_ip_allowed("2.2.3.2", "cidr", "2.2.2.0/24"))
+        self.assertTrue(source_ip_allowed("203.0.113.8", "all"))
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProxyStore(Path(directory) / "state")
+            store.update_access("all")
+            store.create_provider(
+                "inherits-global",
+                "sk-inherit-provider-key",
+                upstream_url="https://api.example.invalid/v1",
+            )
+            store.create_provider(
+                "local-override",
+                "sk-local-provider-key",
+                upstream_url="https://api.example.invalid/v1",
+                access_policy="local",
+            )
+            remote = store.eligible_providers(OPENAI_RESPONSES_ADAPTER, "203.0.113.8")
+            self.assertEqual([item["name"] for item in remote], ["inherits-global"])
+
+    def test_cidr_access_requires_valid_one_rule_per_line(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProxyStore(Path(directory) / "state")
+            store.create_provider(
+                "cidr-provider",
+                "sk-cidr-provider-key",
+                upstream_url="https://api.example.invalid/v1",
+                access_policy="cidr",
+                allowed_networks="2.2.2.0/24\n2001:db8::/32",
+            )
+            provider = store.status()["providers"][0]
+            self.assertEqual(provider["allowed_networks"], "2.2.2.0/24, 2001:db8::/32")
+            with self.assertRaises(ValueError):
+                store.update_access("cidr", "not-an-ip")
+
+    def test_new_channel_uses_client_model_when_no_override_is_configured(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProxyStore(Path(directory) / "state")
+            store.create_provider(
+                "new-provider",
+                "sk-new-provider-key",
+                upstream_url="https://api.example.invalid/v1",
+            )
+            provider = store.eligible_providers(OPENAI_RESPONSES_ADAPTER)[0]
+            self.assertEqual(store.provider_model(provider), "")
+            self.assertTrue(store.status()["ok"])
+
+    def test_global_gpt_guard_rewrites_luna_without_touching_other_families(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProxyStore(Path(directory) / "state")
+            store.create_provider(
+                "multi-model-provider",
+                "sk-multi-model-key",
+                upstream_url="https://api.example.invalid/v1",
+            )
+            provider = store.eligible_providers(OPENAI_RESPONSES_ADAPTER)[0]
+            self.assertEqual(
+                store.provider_model(provider, "gpt-5.6-luna"),
+                "gpt-5.6-sol",
+            )
+            self.assertEqual(store.provider_model(provider, "grok-4"), "")
+            self.assertEqual(store.provider_model(provider, "gemini-2.5-pro"), "")
+            store.update_provider(
+                "multi-model-provider",
+                "multi-model-provider",
+                model_policy="client",
+            )
+            provider = store.eligible_providers(OPENAI_RESPONSES_ADAPTER)[0]
+            self.assertEqual(store.provider_model(provider, "gpt-5.6-luna"), "")
+
+    def test_legacy_global_model_is_migrated_to_existing_channels_only(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "credentials.txt"
+            source.write_text(
+                "upstream_url:https://api.example.invalid/v1\n"
+                "forced_model:legacy-model\n"
+                "existing:sk-existing-provider-key\n",
+                encoding="utf-8",
+            )
+            store = ProxyStore(root / "state", source)
+            existing = store.eligible_providers(OPENAI_RESPONSES_ADAPTER)[0]
+            self.assertEqual(store.provider_model(existing), "legacy-model")
+            store.create_provider(
+                "new-provider",
+                "sk-new-provider-key",
+                upstream_url="https://api.example.invalid/v1",
+            )
+            new_provider = next(
+                item for item in store.eligible_providers(OPENAI_RESPONSES_ADAPTER)
+                if item["name"] == "new-provider"
+            )
+            self.assertEqual(store.provider_model(new_provider), "")
 
     def test_provider_create_update_and_delete_never_exposes_key(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -14,6 +14,7 @@
         font-size: 15px;
       }
       * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
       body { margin: 0; min-width: 320px; }
       button, input { font: inherit; }
       button { cursor: pointer; }
@@ -33,6 +34,8 @@
       .update { color: #68717c; font-size: 12px; white-space: nowrap; }
       .update.available { color: #a45d00; font-weight: 650; }
       .update a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
+      .update-link { display: inline-flex; align-items: center; gap: 6px; }
+      .update-icon { width: 20px; height: 20px; flex: none; }
       #locale-select { height: 32px; border: 1px solid #ccd1d8; border-radius: 6px; padding: 0 8px; background: #fff; color: #292d34; }
       main { max-width: 1160px; margin: 0 auto; padding: 24px 28px 48px; }
       .summary {
@@ -40,13 +43,20 @@
         grid-template-columns: repeat(4, minmax(0, 1fr));
         border: 1px solid #dfe2e6;
         background: #fff;
-        border-radius: 8px;
+        border-radius: 8px 8px 0 0;
         overflow: hidden;
       }
       .metric { padding: 18px 20px; border-right: 1px solid #e5e7eb; min-width: 0; }
       .metric:last-child { border-right: 0; }
       .metric-label { color: #747b86; font-size: 12px; margin-bottom: 7px; }
       .metric-value { font-size: 17px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .network-info { display: flex; align-items: flex-start; gap: 12px; padding: 12px 16px; border: 1px solid #dfe2e6; border-top: 0; border-radius: 0 0 8px 8px; background: #fff; color: #5f6670; font-size: 12px; }
+      .network-label { flex: none; font-weight: 650; }
+      .network-addresses { display: flex; flex-wrap: wrap; gap: 6px 12px; min-width: 0; }
+      .network-addresses code { color: #28303a; overflow-wrap: anywhere; }
+      .network-address { display: inline-flex; align-items: center; gap: 4px; }
+      .copy-address { width: 24px; height: 24px; border: 0; background: transparent; color: #68717c; padding: 0; border-radius: 4px; }
+      .copy-address:hover { background: #eef1f3; color: #1f2933; }
       .toolbar { margin-top: 24px; display: flex; align-items: center; justify-content: space-between; gap: 14px; }
       h2 { margin: 0; font-size: 16px; letter-spacing: 0; }
       .tools { display: flex; align-items: center; gap: 10px; }
@@ -115,12 +125,12 @@
       .field-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
       .field label { font-size: 13px; font-weight: 650; }
       .field input, .field select { width: 100%; height: 40px; border: 1px solid #cbd0d7; border-radius: 6px; padding: 0 10px; outline: none; background: #fff; }
+      .field textarea { width: 100%; min-height: 96px; resize: vertical; border: 1px solid #cbd0d7; border-radius: 6px; padding: 9px 10px; outline: none; font: inherit; }
       .field input:focus { border-color: #168f61; box-shadow: 0 0 0 3px rgba(22, 143, 97, .12); }
       .field-help { color: #777e88; font-size: 12px; line-height: 1.45; }
       .protocol-support { margin: -2px 0 16px; color: #4f5965; font-size: 12px; line-height: 1.5; }
       .dialog-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 22px; }
       .dialog-actions-right { display: flex; gap: 8px; margin-left: auto; }
-      @media (max-width: 520px) { .field-grid { grid-template-columns: 1fr; gap: 0; } }
       @media (max-width: 900px) {
         .summary { grid-template-columns: repeat(2, 1fr); }
         .metric:nth-child(2) { border-right: 0; }
@@ -149,6 +159,7 @@
         .event > :nth-child(1), .event > :nth-child(4), .event > :nth-child(5), .event > :nth-child(6) { display: none; }
         .pagination { align-items: flex-start; flex-direction: column; }
         .page-nav { width: 100%; justify-content: space-between; }
+        .field-grid { grid-template-columns: 1fr; gap: 0; }
       }
     </style>
   </head>
@@ -173,11 +184,13 @@
           <div class="metric"><div class="metric-label" data-i18n="summary.current">Recently Used</div><div class="metric-value" id="current">-</div></div>
           <div class="metric"><div class="metric-label" data-i18n="summary.uptime">Uptime</div><div class="metric-value" id="uptime">-</div></div>
         </section>
+        <div class="network-info"><span class="network-label" data-i18n="summary.networkAddresses">Local connection addresses</span><div class="network-addresses" id="network-addresses">-</div></div>
 
         <div class="toolbar">
           <h2 data-i18n="queue.title">Provider Priority Queue</h2>
           <div class="tools">
             <label class="cooldown"><span data-i18n="queue.cooldown">Cooldown</span> <input id="cooldown" type="number" min="1" max="60" aria-label="Cooldown minutes" /> <span data-i18n="queue.minutes">Minutes</span></label>
+            <button class="button" id="access-settings" data-i18n="queue.accessSettings">Global settings</button>
             <button class="button" id="reset-all" data-i18n="queue.resetAll">Reset All</button>
             <button class="button primary" id="add-provider" data-i18n="queue.add">Add Channel</button>
           </div>
@@ -227,11 +240,13 @@
           <input id="provider-url" name="upstream_url" type="url" maxlength="500" placeholder="https://api.example.com/v1" autocomplete="off" required />
           <div class="field-help" data-i18n="dialog.apiUrlHelp">Leave blank to use the global default endpoint.</div>
         </div>
+        <div class="field">
+          <label for="provider-key" data-i18n="dialog.apiKey">API Key</label>
+          <input id="provider-key" name="key" type="password" autocomplete="new-password" />
+          <div class="field-help" id="key-preview" hidden></div>
+          <div class="field-help" id="key-help">The key is stored locally and never displayed.</div>
+        </div>
         <div class="field-grid">
-          <div class="field">
-            <label for="provider-model" data-i18n="dialog.model">Default Model</label>
-            <input id="provider-model" name="forced_model" maxlength="100" autocomplete="off" required />
-          </div>
           <div class="field">
             <label for="provider-protocol" data-i18n="dialog.protocol">Protocol</label>
             <select id="provider-protocol" name="protocol">
@@ -241,12 +256,29 @@
               <option value="anthropic_messages">Anthropic Messages</option>
             </select>
           </div>
+          <div class="field">
+            <label for="provider-access" data-i18n="dialog.accessPolicy">Allowed source</label>
+            <select id="provider-access" name="access_policy">
+              <option value="inherit" data-i18n="dialog.accessInherit">Follow global setting</option>
+              <option value="local" data-i18n="dialog.accessLocal">Local device only</option>
+              <option value="lan" data-i18n="dialog.accessLan">Local network</option>
+              <option value="cidr" data-i18n="dialog.accessCidr">Specified IP ranges</option>
+              <option value="all" data-i18n="dialog.accessAll">All sources</option>
+            </select>
+          </div>
+        </div>
+        <div class="field" id="allowed-networks-field" hidden>
+          <label for="provider-networks" data-i18n="dialog.allowedNetworks">Allowed IP rules</label>
+          <textarea id="provider-networks" name="allowed_networks" placeholder="2.2.2.0/24&#10;2.2.2.2"></textarea>
+          <div class="field-help" data-i18n="dialog.allowedNetworksHelp">One IPv4, IPv6, or CIDR rule per line.</div>
         </div>
         <div class="field">
-          <label for="provider-key" data-i18n="dialog.apiKey">API Key</label>
-          <input id="provider-key" name="key" type="password" autocomplete="new-password" />
-          <div class="field-help" id="key-preview" hidden></div>
-          <div class="field-help" id="key-help">The key is stored locally and never displayed.</div>
+          <label for="provider-model-policy" data-i18n="dialog.modelPolicy">GPT model policy</label>
+          <select id="provider-model-policy">
+            <option value="inherit" data-i18n="dialog.modelPolicyInherit">Follow global GPT guard</option>
+            <option value="client" data-i18n="dialog.modelPolicyClient">Use client-requested model</option>
+          </select>
+          <div class="field-help" data-i18n="dialog.modelPolicyHelp">Choose the client model option for channels that support Luna.</div>
         </div>
         <div class="dialog-actions">
           <button class="button danger" id="delete-provider" type="button" hidden data-i18n="dialog.delete">Delete Channel</button>
@@ -255,6 +287,33 @@
             <button class="button primary" type="submit" data-i18n="dialog.save">Save</button>
           </div>
         </div>
+      </form>
+    </dialog>
+    <dialog id="access-dialog" aria-labelledby="access-dialog-title">
+      <div class="dialog-head">
+        <h2 id="access-dialog-title" data-i18n="access.title">Global settings</h2>
+        <button class="dialog-close" id="access-dialog-close" type="button" aria-label="Close">×</button>
+      </div>
+      <form class="provider-form" id="access-form">
+        <div class="field">
+          <label for="global-access" data-i18n="dialog.accessPolicy">Allowed source</label>
+          <select id="global-access">
+            <option value="local" data-i18n="dialog.accessLocal">Local device only</option>
+            <option value="lan" data-i18n="dialog.accessLan">Local network</option>
+            <option value="cidr" data-i18n="dialog.accessCidr">Specified IP ranges</option>
+            <option value="all" data-i18n="dialog.accessAll">All sources</option>
+          </select>
+          <div class="field-help" data-i18n="access.help">Channels follow this policy unless they define an override.</div>
+        </div>
+        <div class="field" id="global-networks-field" hidden>
+          <label for="global-networks" data-i18n="dialog.allowedNetworks">Allowed IP rules</label>
+          <textarea id="global-networks" placeholder="2.2.2.0/24&#10;2.2.2.2"></textarea>
+          <div class="field-help" data-i18n="dialog.allowedNetworksHelp">One IPv4, IPv6, or CIDR rule per line.</div>
+        </div>
+        <div class="dialog-actions"><div class="dialog-actions-right">
+          <button class="button" id="access-dialog-cancel" type="button" data-i18n="dialog.cancel">Cancel</button>
+          <button class="button primary" type="submit" data-i18n="dialog.save">Save</button>
+        </div></div>
       </form>
     </dialog>
     <div class="toast" id="toast"></div>
@@ -270,6 +329,7 @@
       if (!allowedEventPageSizes.includes(eventPageSize)) eventPageSize = 20;
       let latestEvents = [];
       let latestProviders = [];
+      let latestStatus = {};
       const esc = (value) => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
       const t = (key, variables = {}) => String(messages[key] ?? key).replace(/\{(\w+)\}/g, (_, name) => String(variables[name] ?? `{${name}}`));
       const systemLocale = () => navigator.languages?.some(value => value.toLowerCase().startsWith("zh")) ? "zh-CN" : "en";
@@ -333,19 +393,27 @@
         return payload;
       }
       function render(data) {
+        latestStatus = data;
         latestProviders = data.providers;
         const ready = data.providers.filter(p => p.health === "ready").length;
         document.querySelector("#service").textContent = data.ok ? t("status.running") : t("status.configError");
         document.querySelector("#available").textContent = `${ready} / ${data.providers.length}`;
         document.querySelector("#current").textContent = data.current_provider || t("status.noRequest");
         document.querySelector("#uptime").textContent = ago(data.uptime_seconds);
+        const addresses = (data.local_addresses || ["127.0.0.1"]).map(address => `${"http:" + "//"}${address}:15722/v1`);
+        const addressTarget = document.querySelector("#network-addresses");
+        const addressSignature = JSON.stringify(addresses);
+        if (addressTarget.dataset.signature !== addressSignature) {
+          addressTarget.dataset.signature = addressSignature;
+          addressTarget.innerHTML = addresses.map(address => `<span class="network-address"><code>${esc(address)}</code><button class="copy-address" type="button" data-address="${esc(address)}" title="${esc(t("action.copy"))}" aria-label="${esc(t("action.copy"))}">⧉</button></span>`).join("");
+        }
         document.querySelector("#endpoint").textContent = `127.0.0.1:15722 · ${data.forced_model || "-"} · Responses + Chat Completions + Messages`;
         const cooldown = document.querySelector("#cooldown");
         if (document.activeElement !== cooldown) cooldown.value = Math.round(data.cooldown_seconds / 60);
         document.querySelector("#providers").innerHTML = data.providers.map((p, index) => `
           <div class="provider ${p.enabled ? "" : "disabled"} ${p.is_current ? "current" : ""}">
             <div class="priority">P${p.priority}</div>
-            <div><div class="name">${esc(p.name)}${p.is_current ? `<span class="current-badge">${t("queue.inUse")}</span>` : ""}</div><div class="subtle">${t("queue.successFailure", {success:p.success_count, failure:p.failure_count})}<span class="key-hint">${esc(p.key_hint || "-")}</span></div><div class="subtle route-info">${esc(p.forced_model || "-")} · ${esc(protocolLabel(p.protocol))} · ${p.has_custom_upstream ? t("queue.routeCustom") : t("queue.routeDefault")}</div><div class="subtle context-observation">${contextSummary(p)}</div></div>
+            <div><div class="name">${esc(p.name)}${p.is_current ? `<span class="current-badge">${t("queue.inUse")}</span>` : ""}</div><div class="subtle">${t("queue.successFailure", {success:p.success_count, failure:p.failure_count})}<span class="key-hint">${esc(p.key_hint || "-")}</span></div><div class="subtle route-info">${esc(p.forced_model || t("queue.clientModel"))} · ${esc(protocolLabel(p.protocol))} · ${esc(accessLabel(p.access_policy))} · ${p.has_custom_upstream ? t("queue.routeCustom") : t("queue.routeDefault")}</div><div class="subtle context-observation">${contextSummary(p)}</div></div>
             <div class="state-cell"><span class="status ${p.health}"><span class="dot"></span>${t(`health.${p.health}`)}${p.cooldown_remaining ? ` ${clock(p.cooldown_remaining)}` : ""}</span></div>
             <div class="error">${esc(p.last_error || t("queue.noError"))}</div>
             <div class="latency">${p.last_latency_ms == null ? "-" : `${p.last_latency_ms} ${t("unit.milliseconds")}`}</div>
@@ -366,7 +434,7 @@
         const version = update.latest_version || update.current_version || "-";
         target.className = `update ${update.state || ""}`;
         if (update.state === "available" && update.release_url) {
-          target.innerHTML = `<a href="${esc(update.release_url)}" target="_blank" rel="noopener noreferrer">${esc(t("update.available", {version}))} · ${esc(t("update.open"))}</a>`;
+          target.innerHTML = `<a class="update-link" href="${esc(update.release_url)}" target="_blank" rel="noopener noreferrer" aria-label="${esc(t("update.available", {version}))}"><img class="update-icon" src="/update.svg" alt="" />${esc(t("update.available", {version}))}</a>`;
           return;
         }
         const key = update.state === "current" ? "update.current" : update.state === "unavailable" ? "update.unavailable" : "update.checking";
@@ -374,6 +442,9 @@
       }
       function protocolLabel(protocol) {
         return protocol === "anthropic_messages" ? "Anthropic Messages" : protocol === "openai_chat_completions" ? t("dialog.protocolChat") : protocol === "openai_responses" ? t("dialog.protocolResponses") : t("dialog.protocolAuto");
+      }
+      function accessLabel(policy) {
+        return t(`dialog.access${policy === "inherit" ? "Inherit" : policy === "lan" ? "Lan" : policy === "cidr" ? "Cidr" : policy === "all" ? "All" : "Local"}`);
       }
       function renderEvents() {
         const total = latestEvents.length;
@@ -398,7 +469,7 @@
       async function refresh() {
         // Keep a native modal stable while the user is entering private channel data.
         // The next refresh runs as soon as the dialog is closed or saved.
-        if (dialog?.open) return;
+        if (dialog?.open || accessDialog?.open) return;
         try {
           const [status, update] = await Promise.all([call("/api/status"), call("/api/update")]);
           render(status);
@@ -407,7 +478,9 @@
         catch (error) { document.querySelector("#service").textContent = t("status.connectionFailed"); }
       }
       const dialog = document.querySelector("#provider-dialog");
+      const accessDialog = document.querySelector("#access-dialog");
       const form = document.querySelector("#provider-form");
+      const accessForm = document.querySelector("#access-form");
       function openProviderDialog(name = "") {
         const editing = Boolean(name);
         const provider = latestProviders.find(item => item.name === name);
@@ -415,10 +488,12 @@
         document.querySelector("#provider-old-name").value = name;
         document.querySelector("#provider-name").value = name;
         document.querySelector("#provider-url").value = "";
-        document.querySelector("#provider-model").value = provider?.forced_model || "";
         document.querySelector("#provider-protocol").value = provider?.protocol || "auto";
+        document.querySelector("#provider-access").value = provider?.access_policy || "inherit";
+        document.querySelector("#provider-networks").value = String(provider?.allowed_networks || "").replace(/,\s*/g, "\n");
+        document.querySelector("#provider-model-policy").value = provider?.model_policy || "inherit";
+        document.querySelector("#allowed-networks-field").hidden = (provider?.access_policy || "inherit") !== "cidr";
         document.querySelector("#provider-url").required = !editing;
-        document.querySelector("#provider-model").required = !editing;
         document.querySelector("#provider-key").value = "";
         document.querySelector("#provider-key").required = !editing;
         document.querySelector("#provider-key").placeholder = editing ? (provider?.key_hint || "") : "";
@@ -448,6 +523,12 @@
       });
       document.querySelector("#event-prev").addEventListener("click", () => { eventPage -= 1; renderEvents(); });
       document.querySelector("#event-next").addEventListener("click", () => { eventPage += 1; renderEvents(); });
+      document.querySelector("#network-addresses").addEventListener("click", async event => {
+        const button = event.target.closest("[data-address]");
+        if (!button) return;
+        try { await navigator.clipboard.writeText(button.dataset.address); toast(t("toast.addressCopied")); }
+        catch (error) { toast(t("error.copyFailed")); }
+      });
       document.querySelector("#providers").addEventListener("click", async event => {
         const button = event.target.closest("[data-action]"); if (!button) return;
         if (button.dataset.action === "edit") { openProviderDialog(button.dataset.name); return; }
@@ -455,13 +536,36 @@
         catch (error) { toast(error.message); }
       });
       document.querySelector("#add-provider").addEventListener("click", () => openProviderDialog());
+      document.querySelector("#access-settings").addEventListener("click", () => {
+        document.querySelector("#global-access").value = latestStatus.access_policy || "local";
+        document.querySelector("#global-networks").value = String(latestStatus.allowed_networks || "").replace(/,\s*/g, "\n");
+        document.querySelector("#global-networks-field").hidden = (latestStatus.access_policy || "local") !== "cidr";
+        accessDialog.showModal();
+      });
       document.querySelector("#dialog-close").addEventListener("click", closeProviderDialog);
       document.querySelector("#dialog-cancel").addEventListener("click", closeProviderDialog);
       dialog.addEventListener("click", event => { if (event.target === dialog) closeProviderDialog(); });
+      document.querySelector("#provider-access").addEventListener("change", event => {
+        document.querySelector("#allowed-networks-field").hidden = event.target.value !== "cidr";
+      });
+      document.querySelector("#global-access").addEventListener("change", event => {
+        document.querySelector("#global-networks-field").hidden = event.target.value !== "cidr";
+      });
+      const closeAccessDialog = () => { accessDialog.close(); accessForm.reset(); void refresh(); };
+      document.querySelector("#access-dialog-close").addEventListener("click", closeAccessDialog);
+      document.querySelector("#access-dialog-cancel").addEventListener("click", closeAccessDialog);
+      accessDialog.addEventListener("click", event => { if (event.target === accessDialog) closeAccessDialog(); });
+      accessForm.addEventListener("submit", async event => {
+        event.preventDefault();
+        try {
+          const data = await call("/api/settings", {method:"PUT", body:JSON.stringify({access_policy:document.querySelector("#global-access").value, allowed_networks:document.querySelector("#global-networks").value})});
+          accessDialog.close(); accessForm.reset(); render(data); toast(t("toast.accessSaved"));
+        } catch (error) { toast(error.message); }
+      });
       form.addEventListener("submit", async event => {
         event.preventDefault();
         const oldName = document.querySelector("#provider-old-name").value;
-        const payload = {old_name: oldName, name: document.querySelector("#provider-name").value.trim(), key: document.querySelector("#provider-key").value.trim(), upstream_url: document.querySelector("#provider-url").value.trim() || null, forced_model: document.querySelector("#provider-model").value.trim() || null, protocol: document.querySelector("#provider-protocol").value};
+        const payload = {old_name: oldName, name: document.querySelector("#provider-name").value.trim(), key: document.querySelector("#provider-key").value.trim(), upstream_url: document.querySelector("#provider-url").value.trim() || null, protocol: document.querySelector("#provider-protocol").value, access_policy: document.querySelector("#provider-access").value, allowed_networks: document.querySelector("#provider-networks").value, model_policy: document.querySelector("#provider-model-policy").value};
         try {
           const data = await call("/api/providers", {method: oldName ? "PUT" : "POST", body: JSON.stringify(payload)});
           dialog.close(); form.reset(); render(data); toast(oldName ? t("toast.providerUpdated") : t("toast.providerAdded"));

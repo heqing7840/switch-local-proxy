@@ -61,7 +61,7 @@ git pull --ff-only
 
 ## CC Switch 后备条目
 
-为了在本地服务离线时仍能快速切回直连线路，可在 CC Switch 中把 Switch Local Proxy 添加为独立 Codex Provider。API 请求地址填写 `http://127.0.0.1:15722/v1/`，上游格式选择 `Responses`，模型使用已配置的强制模型。API Key 保持空白，并确保生成的 Codex Provider 配置为 `requires_openai_auth = false`：本地代理不需要客户端密钥，会在本机注入真实上游 Key。不要把该条目加入 CC Switch 自动故障转移队列，避免两层故障转移叠加；将它作为手动切换目标使用。
+为了在本地服务离线时仍能快速切回直连线路，可在 CC Switch 中把 Switch Local Proxy 添加为独立 Codex Provider。API 请求地址填写 `http://127.0.0.1:15722/v1/`，上游格式选择 `Responses`。API Key 保持空白，并确保生成的 Codex Provider 配置为 `requires_openai_auth = false`：本地代理不需要客户端密钥，会在本机注入真实上游 Key。不要把该条目加入 CC Switch 自动故障转移队列，避免两层故障转移叠加；将它作为手动切换目标使用。
 
 ## Claude Code
 
@@ -82,16 +82,15 @@ claude
 - `POST /v1/messages`
 - `POST /v1/messages/count_tokens`
 
-适配器会保留 `anthropic-version`、`anthropic-beta` 等 Anthropic 请求头，将模型替换为 `forced_model`，并识别 Anthropic 流式 SSE 事件。
+适配器会保留 `anthropic-version`、`anthropic-beta` 等 Anthropic 请求头，默认原样转发客户端请求的模型名，并识别 Anthropic 流式 SSE 事件。
 
 ## 配置格式
 
-每条渠道在管理页中配置，并保存到本机 SQLite。可选配置项：
+每条渠道在管理页中配置，并保存到本机 SQLite。添加渠道只需填写名称、API 地址和 API Key；协议默认自动匹配，模型由客户端请求决定。
 
 | 配置项 | 含义 |
 | --- | --- |
-| `upstream_url` | 该渠道独立的 API 前缀；留空则继承全局默认地址 |
-| `forced_model` | 实际发送给上游的模型名 |
+| `upstream_url` | 该渠道独立的 API 前缀 |
 | `protocol` | `auto`、`openai_responses`、`openai_chat_completions` 或 `anthropic_messages` |
 
 管理页把密钥、渠道配置、运行状态和请求记录保存到被忽略的 `runtime/proxy.sqlite3`；完整密钥和私有 API 地址不会由状态接口返回。
@@ -117,13 +116,25 @@ claude
 
 ## 兼容范围
 
-当前版本实现 OpenAI Responses、OpenAI 兼容 Chat Completions 与 Anthropic Messages 三种透传适配器。Grok 可使用其 OpenAI 兼容 Responses 接口；Gemini、通义千问、DeepSeek、Mistral 等服务在提供 Chat Completions 兼容接口时可以接入。原生 Gemini `generateContent` 尚未实现。上游必须支持客户端使用的协议；代理不转换请求或响应格式，并且当前一份本地配置仍由所有路径共用同一个上游基地址和强制模型。
+当前版本支持以下渠道类型：
+
+- GPT/Codex 与 Grok：通过 OpenAI Responses 接口接入。
+- Gemini、通义千问、DeepSeek、Mistral 及其它 OpenAI 兼容服务：通过 Chat Completions 接口接入。
+- Claude：通过 Anthropic Messages 接口接入。
+
+每条渠道都有独立 API 地址、API Key 和协议设置，模型名默认由 Codex、Claude Code 或其它客户端随请求传入，不需要在渠道表单中配置。原生 Gemini `generateContent` 尚未实现；上游必须提供上述某一种兼容协议，代理不在不同协议之间转换请求或响应格式。
+
+内置 GPT 防护会把 `gpt-*` 请求（包括偶发的 `gpt-5.6-luna`）改写为本机全局 GPT 模型，避免不支持 Luna 的中继报错。支持 Luna 的渠道可在编辑页把“GPT 模型策略”改为“使用客户端请求模型”；其它模型家族不受该防护影响。界面不允许手工输入具体模型名。
+
+## 来源访问控制
+
+服务监听本机网卡，但管理页和管理 API 始终仅限本机。模型代理请求采用两级来源规则：全局默认“仅限本机”，单个渠道默认“跟随全局”；渠道设置为其它规则时以渠道设置优先。支持仅本机、仅局域网、所有来源，以及一行一条 IPv4、IPv6 或 CIDR 的指定范围。管理页会显示当前可连接的本机 IPv4 地址。
 
 Claude Code 配置依据 [Claude Code 官方 LLM Gateway 指南](https://code.claude.com/docs/en/llm-gateway-connect)，请求路径和请求头依据 [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create)。
 
 ## 安全
 
-服务默认只监听回环地址，并拒绝 `Origin` 不是本机的浏览器请求。除非另行增加认证和访问控制，否则不要把它暴露到局域网或公网。不要把真实 Key、私有上游地址或客户端凭据写入源码、文档、截图、日志或 Issue。每次公开推送前都应运行 `./run.sh privacy-check`。
+服务默认仅允许本机来源使用渠道；只有用户明确选择局域网、指定范围或所有来源时才允许远程代理请求。管理接口始终仅限本机，并继续拒绝不匹配的浏览器 `Origin`。选择“所有来源”会让任何能连接端口的设备消耗该渠道额度，应谨慎使用。不要把真实 Key、私有上游地址或客户端凭据写入源码、文档、截图、日志或 Issue。每次公开推送前都应运行 `./run.sh privacy-check`。
 
 ## 许可证
 

@@ -61,7 +61,7 @@ git pull --ff-only
 
 ## CC Switch Fallback Entry
 
-To keep a direct relay available when the local service is offline, add Switch Local Proxy as a separate Codex provider in CC Switch. Use `http://127.0.0.1:15722/v1/` as the API request URL, select `Responses`, and use the configured forced model. Leave the API Key blank and ensure the generated Codex provider has `requires_openai_auth = false`: the local proxy does not require a client key and injects the real upstream key locally. Keep this entry out of CC Switch automatic failover to avoid two independent failover layers; use it as a manual switch target.
+To keep a direct relay available when the local service is offline, add Switch Local Proxy as a separate Codex provider in CC Switch. Use `http://127.0.0.1:15722/v1/` as the API request URL and select `Responses`. Leave the API Key blank and ensure the generated Codex provider has `requires_openai_auth = false`: the local proxy does not require a client key and injects the real upstream key locally. Keep this entry out of CC Switch automatic failover to avoid two independent failover layers; use it as a manual switch target.
 
 ## Claude Code
 
@@ -82,16 +82,15 @@ Supported Anthropic paths:
 - `POST /v1/messages`
 - `POST /v1/messages/count_tokens`
 
-The adapter preserves Anthropic headers such as `anthropic-version` and `anthropic-beta`, replaces the model with `forced_model`, and supports Anthropic streaming SSE events.
+The adapter preserves Anthropic headers such as `anthropic-version` and `anthropic-beta`, forwards the client-requested model by default, and supports Anthropic streaming SSE events.
 
 ## Configuration
 
-Each channel is configured in the dashboard and stored in SQLite. The optional per-channel settings are:
+Each channel is configured in the dashboard and stored in SQLite. Adding a channel requires only a name, API URL, and API key. Protocol matching defaults to automatic, and the model comes from the client request.
 
 | Setting | Meaning |
 | --- | --- |
-| `upstream_url` | Channel-specific API prefix; blank inherits the global default |
-| `forced_model` | Model sent to the upstream service |
+| `upstream_url` | Channel-specific API prefix |
 | `protocol` | `auto`, `openai_responses`, `openai_chat_completions`, or `anthropic_messages` |
 
 The dashboard persists credentials, routing state, runtime health, and request metadata in the ignored `runtime/proxy.sqlite3` database. Full credentials and private API addresses are never returned by the status API.
@@ -117,13 +116,25 @@ The proxy does not retry after productive streaming output has already reached t
 
 ## Compatibility
 
-This release implements pass-through adapters for OpenAI Responses, OpenAI-compatible Chat Completions, and Anthropic Messages. Grok can use its OpenAI-compatible Responses endpoint. Gemini, Qwen, DeepSeek, Mistral, and similar services can use Chat Completions when their upstream exposes that compatibility endpoint. Native Gemini `generateContent` is not implemented. The configured upstream must support the wire protocol used by the client; this proxy does not translate request or response formats, and one local configuration still uses one upstream base URL and forced model for all paths.
+This release supports these channel types:
+
+- GPT/Codex and Grok through OpenAI Responses.
+- Gemini, Qwen, DeepSeek, Mistral, and other OpenAI-compatible services through Chat Completions.
+- Claude through Anthropic Messages.
+
+Every channel has its own API URL, API key, and protocol setting. The model name is supplied by Codex, Claude Code, or another client, so it does not need to be configured in the channel form. Native Gemini `generateContent` is not implemented; the upstream must expose one of the supported compatible protocols, and the proxy does not translate between request or response formats.
+
+The built-in GPT guard rewrites `gpt-*` requests, including occasional `gpt-5.6-luna` requests, to the local global GPT model so relays without Luna support do not fail. A Luna-capable channel can select **Use client-requested model** in its GPT model policy. Other model families are unaffected, and the UI never accepts a manually typed model name.
+
+## Source Access Control
+
+The service listens on local network interfaces, while the dashboard and management APIs remain loopback-only. Proxy requests use two access levels: the global policy defaults to local-only, and channels follow it unless they define an override. Policies support local-only, private LAN, all sources, or one IPv4, IPv6, or CIDR rule per line. The dashboard lists the current machine's usable IPv4 proxy addresses.
 
 Claude Code gateway configuration follows the [official Claude Code LLM gateway guide](https://code.claude.com/docs/en/llm-gateway-connect). Anthropic request paths and headers follow the [Messages API reference](https://platform.claude.com/docs/en/api/messages/create).
 
 ## Security
 
-The service listens on loopback by default and rejects browser requests whose `Origin` is not local. Do not expose it to a network without adding authentication and access controls. Do not put real keys, private upstream URLs, or client credentials in source files, documentation, screenshots, logs, or issue reports. Run `./run.sh privacy-check` before every public push.
+Channel access defaults to local-only. Remote proxy requests are accepted only after a user explicitly selects LAN, a bounded IP range, or all sources; management endpoints always remain loopback-only and retain browser Origin checks. The **All sources** option allows any device that can reach the port to consume that channel's quota and should be used cautiously. Do not put real keys, private upstream URLs, or client credentials in source files, documentation, screenshots, logs, or issue reports. Run `./run.sh privacy-check` before every public push.
 
 ## License
 

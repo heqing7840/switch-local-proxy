@@ -143,6 +143,7 @@ def dist_findings(root: Path) -> list[tuple[str, str, int, str]]:
         "server.py",
         "version.json",
         "web/index.html",
+        "web/update.svg",
         "web/locales/en.json",
         "web/locales/zh-CN.json",
     }

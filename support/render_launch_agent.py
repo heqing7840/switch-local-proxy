@@ -17,7 +17,7 @@ def main() -> None:
         "ProgramArguments": [python, server],
         "WorkingDirectory": workdir,
         "EnvironmentVariables": {
-            "SWITCH_LOCAL_PROXY_HOST": "127.0.0.1",
+            "SWITCH_LOCAL_PROXY_HOST": "0.0.0.0",
             "SWITCH_LOCAL_PROXY_PORT": port,
             "SWITCH_LOCAL_PROXY_STATE_DIR": state_dir,
         },

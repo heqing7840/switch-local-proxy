@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import ipaddress
 import os
 import re
 import sqlite3
@@ -38,6 +39,16 @@ SUPPORTED_ADAPTERS = (
 )
 PROVIDER_PROTOCOL_AUTO = "auto"
 SUPPORTED_PROVIDER_PROTOCOLS = (PROVIDER_PROTOCOL_AUTO,) + SUPPORTED_ADAPTERS
+ACCESS_LOCAL = "local"
+ACCESS_LAN = "lan"
+ACCESS_CIDR = "cidr"
+ACCESS_ALL = "all"
+ACCESS_INHERIT = "inherit"
+SUPPORTED_ACCESS_POLICIES = (ACCESS_LOCAL, ACCESS_LAN, ACCESS_CIDR, ACCESS_ALL)
+SUPPORTED_PROVIDER_ACCESS_POLICIES = (ACCESS_INHERIT,) + SUPPORTED_ACCESS_POLICIES
+MODEL_POLICY_INHERIT = "inherit"
+MODEL_POLICY_CLIENT = "client"
+SUPPORTED_MODEL_POLICIES = (MODEL_POLICY_INHERIT, MODEL_POLICY_CLIENT)
 
 
 def adapter_for_path(path: str) -> str | None:
@@ -103,6 +114,57 @@ def normalize_provider_protocol(value: Any) -> str:
 
 def normalize_provider_model(value: Any) -> str:
     return str(value or "").strip()[:100]
+
+
+def normalize_access_policy(value: Any) -> str:
+    policy = str(value or ACCESS_LOCAL).strip().lower()
+    return policy if policy in SUPPORTED_ACCESS_POLICIES else ACCESS_LOCAL
+
+
+def normalize_provider_access_policy(value: Any) -> str:
+    policy = str(value or ACCESS_INHERIT).strip().lower()
+    return policy if policy in SUPPORTED_PROVIDER_ACCESS_POLICIES else ACCESS_INHERIT
+
+
+def normalize_model_policy(value: Any) -> str:
+    policy = str(value or MODEL_POLICY_INHERIT).strip().lower()
+    return policy if policy in SUPPORTED_MODEL_POLICIES else MODEL_POLICY_INHERIT
+
+
+def normalize_allowed_networks(value: Any) -> str:
+    parts = [item.strip() for item in re.split(r"[,\n]+", str(value or "")) if item.strip()]
+    if len(parts) > 20:
+        raise ValueError("最多支持 20 个 IP 或 CIDR 网段")
+    normalized = []
+    for item in parts:
+        try:
+            normalized.append(str(ipaddress.ip_network(item, strict=False)))
+        except ValueError as error:
+            raise ValueError(f"无效的 IP 或 CIDR：{item}") from error
+    return ", ".join(dict.fromkeys(normalized))
+
+
+def source_ip_allowed(client_ip: str, policy: Any, allowed_networks: Any = "") -> bool:
+    try:
+        address = ipaddress.ip_address(client_ip)
+    except ValueError:
+        return False
+    policy = normalize_access_policy(policy)
+    if policy == ACCESS_ALL:
+        return True
+    if policy == ACCESS_LOCAL:
+        return address.is_loopback
+    if policy == ACCESS_LAN:
+        return address.is_loopback or address.is_private or address.is_link_local
+    try:
+        networks = [
+            ipaddress.ip_network(item.strip(), strict=False)
+            for item in str(allowed_networks or "").split(",")
+            if item.strip()
+        ]
+    except ValueError:
+        return False
+    return any(address.version == network.version and address in network for network in networks)
 
 
 def validate_provider_name(value: str) -> str:
@@ -344,14 +406,19 @@ class ProxyStore:
             or os.environ.get("CODEX_KEY_PROXY_UPSTREAM_URL")
             or private.get("upstream_url", "")
         ).rstrip("/")
-        forced_model = (
+        explicit_forced_model = (
             os.environ.get("SWITCH_LOCAL_PROXY_FORCED_MODEL")
             or os.environ.get("CODEX_KEY_PROXY_FORCED_MODEL")
             or private.get("forced_model", "")
         )
+        forced_model = explicit_forced_model or "gpt-5.6-sol"
         return {
             "cooldown_seconds": 300,
             "forced_model": forced_model,
+            "_legacy_model_explicit": bool(explicit_forced_model),
+            "model_routing_version": 2,
+            "access_policy": ACCESS_LOCAL,
+            "allowed_networks": "",
             "upstream_base_url": upstream_url,
             "providers": [
                 {"name": name, "enabled": True, "priority": index + 1}
@@ -378,6 +445,8 @@ class ProxyStore:
         default["cooldown_seconds"] = max(
             60, min(3600, safe_int(saved.get("cooldown_seconds"), 300))
         )
+        default["access_policy"] = normalize_access_policy(saved.get("access_policy"))
+        default["allowed_networks"] = normalize_allowed_networks(saved.get("allowed_networks"))
         saved_providers = {
             item.get("name"): item
             for item in saved.get("providers", [])
@@ -412,8 +481,21 @@ class ProxyStore:
                     "upstream_url": str(item.get("upstream_url") or "").rstrip("/"),
                     "forced_model": normalize_provider_model(item.get("forced_model")),
                     "protocol": normalize_provider_protocol(item.get("protocol")),
+                    "access_policy": normalize_provider_access_policy(item.get("access_policy")),
+                    "allowed_networks": normalize_allowed_networks(item.get("allowed_networks")),
+                    "model_policy": normalize_model_policy(item.get("model_policy")),
                 }
             )
+        migrate_legacy_model = (
+            safe_int(saved.get("model_routing_version"), 1) < 2
+            and bool(saved.get("forced_model") or default.pop("_legacy_model_explicit", False))
+        )
+        default.pop("_legacy_model_explicit", None)
+        if migrate_legacy_model and default["forced_model"]:
+            for provider in providers:
+                if not provider["forced_model"]:
+                    provider["forced_model"] = default["forced_model"]
+        default["model_routing_version"] = 2
         default["providers"] = self._normalize_priorities(providers)
         self.settings = default
         self._save_settings()
@@ -545,6 +627,9 @@ class ProxyStore:
         upstream_url: str = "",
         forced_model: str = "",
         protocol: str = PROVIDER_PROTOCOL_AUTO,
+        access_policy: str = ACCESS_INHERIT,
+        allowed_networks: str = "",
+        model_policy: str = MODEL_POLICY_INHERIT,
     ) -> None:
         name = validate_provider_name(name)
         key = validate_provider_key(key)
@@ -553,6 +638,11 @@ class ProxyStore:
             raise ValueError("API 地址必须是无账号密码的 http(s) 地址")
         forced_model = normalize_provider_model(forced_model)
         protocol = normalize_provider_protocol(protocol)
+        access_policy = normalize_provider_access_policy(access_policy)
+        allowed_networks = normalize_allowed_networks(allowed_networks)
+        model_policy = normalize_model_policy(model_policy)
+        if access_policy == ACCESS_CIDR and not allowed_networks:
+            raise ValueError("指定 IP 范围时至少需要填写一个 IP 或 CIDR")
         with self.lock:
             providers = self._normalize_priorities(list(self.settings["providers"]))
             if len(providers) >= MAX_PROVIDERS:
@@ -569,6 +659,9 @@ class ProxyStore:
                     "upstream_url": upstream_url,
                     "forced_model": forced_model,
                     "protocol": protocol,
+                    "access_policy": access_policy,
+                    "allowed_networks": allowed_networks,
+                    "model_policy": model_policy,
                 }
             )
             self._write_keys(keys)
@@ -585,6 +678,9 @@ class ProxyStore:
         upstream_url: str | None = None,
         forced_model: str | None = None,
         protocol: str | None = None,
+        access_policy: str | None = None,
+        allowed_networks: str | None = None,
+        model_policy: str | None = None,
     ) -> None:
         old_name = validate_provider_name(old_name)
         name = validate_provider_name(name)
@@ -595,6 +691,11 @@ class ProxyStore:
                 raise ValueError("API 地址必须是无账号密码的 http(s) 地址")
         normalized_model = normalize_provider_model(forced_model) if forced_model is not None else None
         normalized_protocol = normalize_provider_protocol(protocol) if protocol is not None else None
+        normalized_access = normalize_provider_access_policy(access_policy) if access_policy is not None else None
+        normalized_networks = normalize_allowed_networks(allowed_networks) if allowed_networks is not None else None
+        normalized_model_policy = normalize_model_policy(model_policy) if model_policy is not None else None
+        if normalized_access == ACCESS_CIDR and not normalized_networks:
+            raise ValueError("指定 IP 范围时至少需要填写一个 IP 或 CIDR")
         with self.lock:
             providers = self._normalize_priorities(list(self.settings["providers"]))
             index = next(
@@ -619,10 +720,16 @@ class ProxyStore:
             providers[index]["name"] = name
             if upstream_url is not None and upstream_url.strip():
                 providers[index]["upstream_url"] = upstream_url.strip().rstrip("/")
-            if normalized_model:
+            if normalized_model is not None:
                 providers[index]["forced_model"] = normalized_model
             if normalized_protocol is not None:
                 providers[index]["protocol"] = normalized_protocol
+            if normalized_access is not None:
+                providers[index]["access_policy"] = normalized_access
+            if normalized_networks is not None:
+                providers[index]["allowed_networks"] = normalized_networks
+            if normalized_model_policy is not None:
+                providers[index]["model_policy"] = normalized_model_policy
             if name != old_name:
                 self.runtime[name] = self.runtime.pop(old_name, self._runtime_state())
                 if self.active_provider == old_name:
@@ -651,7 +758,9 @@ class ProxyStore:
             self._save_settings()
             self._save_runtime()
 
-    def eligible_providers(self, adapter: str | None = None) -> list[dict[str, Any]]:
+    def eligible_providers(
+        self, adapter: str | None = None, client_ip: str | None = None
+    ) -> list[dict[str, Any]]:
         keys = self.load_keys()
         now = time.time()
         with self.lock:
@@ -664,6 +773,9 @@ class ProxyStore:
                     PROVIDER_PROTOCOL_AUTO,
                     adapter,
                 }:
+                    continue
+                effective_policy, effective_networks = self._effective_access(provider)
+                if client_ip and not source_ip_allowed(client_ip, effective_policy, effective_networks):
                     continue
                 if state["cooldown_until"] > now or state["probing"]:
                     continue
@@ -679,15 +791,44 @@ class ProxyStore:
                         "upstream_url": provider.get("upstream_url", ""),
                         "forced_model": provider.get("forced_model", ""),
                         "protocol": provider.get("protocol", PROVIDER_PROTOCOL_AUTO),
+                        "access_policy": provider.get("access_policy", ACCESS_INHERIT),
+                        "allowed_networks": provider.get("allowed_networks", ""),
+                        "model_policy": provider.get("model_policy", MODEL_POLICY_INHERIT),
                     }
                 )
             return result
 
+    def source_allowed_for_any(self, adapter: str, client_ip: str) -> bool:
+        keys = self.load_keys()
+        with self.lock:
+            return any(
+                provider.get("enabled", True)
+                and provider["name"] in keys
+                and provider.get("protocol", PROVIDER_PROTOCOL_AUTO) in {
+                    PROVIDER_PROTOCOL_AUTO,
+                    adapter,
+                }
+                and source_ip_allowed(client_ip, *self._effective_access(provider))
+                for provider in self.settings["providers"]
+            )
+
+    def _effective_access(self, provider: dict[str, Any]) -> tuple[str, str]:
+        policy = provider.get("access_policy", ACCESS_INHERIT)
+        if policy == ACCESS_INHERIT:
+            return self.settings["access_policy"], self.settings["allowed_networks"]
+        return policy, str(provider.get("allowed_networks") or "")
+
     def provider_upstream_url(self, provider: dict[str, Any]) -> str:
         return str(provider.get("upstream_url") or self.settings["upstream_base_url"]).rstrip("/")
 
-    def provider_model(self, provider: dict[str, Any]) -> str:
-        return str(provider.get("forced_model") or self.settings["forced_model"])
+    def provider_model(self, provider: dict[str, Any], requested_model: str = "") -> str:
+        if provider.get("model_policy", MODEL_POLICY_INHERIT) == MODEL_POLICY_CLIENT:
+            return ""
+        configured = str(provider.get("forced_model") or "")
+        if configured:
+            return configured
+        global_model = str(self.settings.get("forced_model") or "")
+        return global_model if global_model and requested_model.lower().startswith("gpt-") else ""
 
     def set_active_provider(self, name: str | None) -> None:
         with self.lock:
@@ -841,7 +982,11 @@ class ProxyStore:
                         "has_key": provider["name"] in keys,
                         "key_hint": mask_provider_key(keys.get(provider["name"], "")),
                         "protocol": provider.get("protocol", PROVIDER_PROTOCOL_AUTO),
-                        "forced_model": provider.get("forced_model") or self.settings["forced_model"],
+                        "access_policy": provider.get("access_policy", ACCESS_INHERIT),
+                        "allowed_networks": provider.get("allowed_networks", ""),
+                        "effective_access_policy": self._effective_access(provider)[0],
+                        "model_policy": provider.get("model_policy", MODEL_POLICY_INHERIT),
+                        "forced_model": provider.get("forced_model", ""),
                         "has_custom_upstream": bool(provider.get("upstream_url")),
                         "is_current": provider["name"] == current_provider,
                         "max_success_input_tokens": state["max_success_input_tokens"] or None,
@@ -851,10 +996,15 @@ class ProxyStore:
                     }
                 )
             configuration_error = None
-            if not valid_upstream_url(str(self.settings.get("upstream_base_url") or "")):
+            if any(
+                provider["enabled"]
+                and provider["name"] in keys
+                and not valid_upstream_url(
+                    str(provider.get("upstream_url") or self.settings.get("upstream_base_url") or "")
+                )
+                for provider in self.settings["providers"]
+            ):
                 configuration_error = "upstream_url is missing or invalid"
-            elif not str(self.settings.get("forced_model") or ""):
-                configuration_error = "forced_model is missing"
             return {
                 "ok": key_error is None and bool(keys) and configuration_error is None,
                 "service": "Switch Local Proxy",
@@ -862,6 +1012,8 @@ class ProxyStore:
                 "port": 15722,
                 "uptime_seconds": int(now - self.started_at),
                 "cooldown_seconds": self.settings["cooldown_seconds"],
+                "access_policy": self.settings["access_policy"],
+                "allowed_networks": self.settings["allowed_networks"],
                 "forced_model": self.settings["forced_model"],
                 "supported_adapters": list(SUPPORTED_ADAPTERS),
                 "last_switch": self.last_switch,
@@ -876,6 +1028,17 @@ class ProxyStore:
         with self.lock:
             self.settings["cooldown_seconds"] = max(60, min(3600, int(seconds)))
             self._save_settings()
+
+    def update_access(self, policy: str, allowed_networks: str = "") -> None:
+        policy = normalize_access_policy(policy)
+        allowed_networks = normalize_allowed_networks(allowed_networks)
+        if policy == ACCESS_CIDR and not allowed_networks:
+            raise ValueError("指定 IP 范围时至少需要填写一个 IP 或 CIDR")
+        with self.lock:
+            self.settings["access_policy"] = policy
+            self.settings["allowed_networks"] = allowed_networks
+            self._save_settings()
+
 
     def provider_action(self, name: str, action: str) -> None:
         with self.lock:
