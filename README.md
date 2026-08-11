@@ -17,6 +17,7 @@ The proxy accepts OpenAI Responses, OpenAI-compatible Chat Completions, and Anth
 - Add, edit, delete, enable, disable, reorder, and restore providers from the dashboard.
 - No database or cloud control plane. Runtime state stays on the local machine.
 - The service binds to loopback by default and runs as a macOS background LaunchAgent.
+- `RunAtLoad` starts it at login and `KeepAlive` relaunches it after an unexpected exit; `./run.sh doctor` verifies both guarantees.
 - Cross-origin browser writes are rejected, request bodies are capped, and client cookies are never forwarded upstream.
 - The release gate scans tracked files, new unignored files, all Git history, and the `dist/` allowlist without printing matched values.
 

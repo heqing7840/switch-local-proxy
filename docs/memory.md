@@ -164,3 +164,11 @@
 - 尝试：读取本机 SQLite 配置并对 `ar` 的模型列表与最小 Responses 请求做诊断，不输出密钥。
 - 结果：增加 loopback-only `GET /api/provider?name=...`，编辑时回显 URL；`ar` 已启用且无冷却、历史有成功请求，但当前直接上游均返回 `401 unauthorized client detected`。
 - 结论：该 401 应先由中继服务商核对密钥状态、来源 IP 或客户端识别规则；确认前不要把 `ar` 提升为首选渠道。
+
+## 2026-08-11 - 服务假性断线与 SQLite 文件描述符泄漏
+
+- 问题：服务运行一段时间后端口或管理页失效，用户感觉后台服务经常断掉。
+- 证据：`service.stderr.log` 出现大量 `OSError: [Errno 24] Too many open files`；新进程短时间内对同一 SQLite 文件积累近百个打开描述符。LaunchAgent 本身已经启用 `RunAtLoad` 与 `KeepAlive`，进程没有频繁崩溃记录。
+- 根因：`sqlite3.Connection` 的 `with` 只提交或回滚事务，不会关闭连接；每次状态刷新和事件写入都遗留一个数据库文件描述符。
+- 最终结果：数据库初始化、读取、写入统一使用 `contextlib.closing`，写操作保留事务上下文；增加连续 20 轮读写并核对 40 个连接全部关闭的回归测试。`doctor` 同时校验登录自动启动和异常退出自动重启。
+- 结论：先消除资源泄漏，再依赖现有无窗口 LaunchAgent 自愈；不引入可能抢焦点的桌面应用守护方式。

@@ -8,9 +8,11 @@ import time
 import unittest
 from http.server import ThreadingHTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 
+import proxy_core  # noqa: E402
 from proxy_core import (  # noqa: E402
     ANTHROPIC_MESSAGES_ADAPTER,
     DEFAULT_PROVIDER_NAMES,
@@ -39,6 +41,32 @@ from server import (  # noqa: E402
 
 
 class ProxyCoreTests(unittest.TestCase):
+    def test_sqlite_connections_are_closed_after_reads_and_writes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = ProxyStore(Path(directory) / "state")
+            original_connect = sqlite3.connect
+            opened = []
+            closed = []
+
+            class TrackingConnection(sqlite3.Connection):
+                def close(self):
+                    closed.append(self)
+                    super().close()
+
+            def tracked_connect(*args, **kwargs):
+                kwargs["factory"] = TrackingConnection
+                connection = original_connect(*args, **kwargs)
+                opened.append(connection)
+                return connection
+
+            with patch.object(proxy_core.sqlite3, "connect", side_effect=tracked_connect):
+                for index in range(20):
+                    store._db_write("fd-regression", {"index": index})
+                    self.assertEqual(store._db_read("fd-regression", {})["index"], index)
+
+            self.assertEqual(len(opened), 40)
+            self.assertEqual(len(closed), len(opened))
+
     def test_update_status_contains_only_public_version_metadata(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

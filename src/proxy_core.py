@@ -8,6 +8,7 @@ import sqlite3
 import tempfile
 import threading
 import time
+from contextlib import closing
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
@@ -363,13 +364,17 @@ class ProxyStore:
         self.events = self._load_events()
 
     def _init_db(self) -> None:
-        with sqlite3.connect(self.db_path) as connection:
-            connection.execute(
-                "CREATE TABLE IF NOT EXISTS proxy_data (name TEXT PRIMARY KEY, value TEXT NOT NULL)"
-            )
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            with connection:
+                connection.execute(
+                    "CREATE TABLE IF NOT EXISTS proxy_data (name TEXT PRIMARY KEY, value TEXT NOT NULL)"
+                )
 
     def _db_read(self, name: str, default: Any) -> Any:
-        with sqlite3.connect(self.db_path) as connection:
+        # sqlite3.Connection's context manager commits/rolls back but does not
+        # close the descriptor. Explicit closing is required for a long-lived,
+        # multi-threaded proxy process.
+        with closing(sqlite3.connect(self.db_path)) as connection:
             row = connection.execute("SELECT value FROM proxy_data WHERE name = ?", (name,)).fetchone()
         if not row:
             return default
@@ -380,11 +385,12 @@ class ProxyStore:
 
     def _db_write(self, name: str, value: Any) -> None:
         encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
-        with sqlite3.connect(self.db_path) as connection:
-            connection.execute(
-                "INSERT INTO proxy_data(name, value) VALUES(?, ?) ON CONFLICT(name) DO UPDATE SET value=excluded.value",
-                (name, encoded),
-            )
+        with closing(sqlite3.connect(self.db_path)) as connection:
+            with connection:
+                connection.execute(
+                    "INSERT INTO proxy_data(name, value) VALUES(?, ?) ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+                    (name, encoded),
+                )
 
     def _save_settings(self) -> None:
         self._db_write("settings", self.settings)

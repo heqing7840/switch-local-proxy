@@ -79,6 +79,14 @@ assert store.load_keys(), "SQLite 中没有有效渠道"
 print(f"配置检查通过：{len(store.load_keys())} 个渠道，未输出密钥")
 PY
   plutil -lint "$PLIST" >/dev/null
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :RunAtLoad' "$PLIST" 2>/dev/null)" == "true" ]] || {
+    echo "FAIL: LaunchAgent 未启用登录自动启动，请运行 ./run.sh repair" >&2
+    return 1
+  }
+  [[ "$(/usr/libexec/PlistBuddy -c 'Print :KeepAlive' "$PLIST" 2>/dev/null)" == "true" ]] || {
+    echo "FAIL: LaunchAgent 未启用异常退出自动重启，请运行 ./run.sh repair" >&2
+    return 1
+  }
   launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || {
     echo "FAIL: LaunchAgent 未加载，可运行 ./run.sh repair" >&2
     return 1
@@ -87,7 +95,7 @@ PY
     echo "FAIL: 服务健康检查失败，可运行 ./run.sh repair" >&2
     return 1
   }
-  echo "运行检查通过：LaunchAgent、端口、服务身份和可用密钥均正常"
+  echo "运行检查通过：登录自启、异常重启、端口、服务身份和可用密钥均正常"
 }
 
 build() {
