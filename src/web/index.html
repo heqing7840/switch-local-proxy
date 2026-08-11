@@ -396,6 +396,9 @@
         document.querySelector("#event-next").disabled = eventPage >= pages;
       }
       async function refresh() {
+        // Keep a native modal stable while the user is entering private channel data.
+        // The next refresh runs as soon as the dialog is closed or saved.
+        if (dialog?.open) return;
         try {
           const [status, update] = await Promise.all([call("/api/status"), call("/api/update")]);
           render(status);
@@ -426,7 +429,11 @@
         dialog.showModal();
         document.querySelector("#provider-name").focus();
       }
-      function closeProviderDialog() { dialog.close(); form.reset(); }
+      function closeProviderDialog() {
+        dialog.close();
+        form.reset();
+        void refresh();
+      }
       document.querySelector("#locale-select").addEventListener("change", async event => {
         localStorage.setItem(localeStorageKey, event.target.value);
         await loadLocale();
@@ -457,13 +464,13 @@
         const payload = {old_name: oldName, name: document.querySelector("#provider-name").value.trim(), key: document.querySelector("#provider-key").value.trim(), upstream_url: document.querySelector("#provider-url").value.trim() || null, forced_model: document.querySelector("#provider-model").value.trim() || null, protocol: document.querySelector("#provider-protocol").value};
         try {
           const data = await call("/api/providers", {method: oldName ? "PUT" : "POST", body: JSON.stringify(payload)});
-          closeProviderDialog(); render(data); toast(oldName ? t("toast.providerUpdated") : t("toast.providerAdded"));
+          dialog.close(); form.reset(); render(data); toast(oldName ? t("toast.providerUpdated") : t("toast.providerAdded"));
         } catch (error) { toast(error.message); }
       });
       document.querySelector("#delete-provider").addEventListener("click", async () => {
         const name = document.querySelector("#provider-old-name").value;
         if (!name || !confirm(t("dialog.deleteConfirm", {name}))) return;
-        try { const data = await call("/api/providers", {method:"DELETE", body:JSON.stringify({name})}); closeProviderDialog(); render(data); toast(t("toast.providerDeleted")); }
+        try { const data = await call("/api/providers", {method:"DELETE", body:JSON.stringify({name})}); dialog.close(); form.reset(); render(data); toast(t("toast.providerDeleted")); }
         catch (error) { toast(error.message); }
       });
       document.querySelector("#reset-all").addEventListener("click", async () => {
