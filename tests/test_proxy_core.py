@@ -13,6 +13,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "src"))
 from proxy_core import (  # noqa: E402
     ANTHROPIC_MESSAGES_ADAPTER,
     DEFAULT_PROVIDER_NAMES,
+    OPENAI_CHAT_COMPLETIONS_ADAPTER,
     OPENAI_RESPONSES_ADAPTER,
     ProxyStore,
     adapter_for_path,
@@ -32,11 +33,14 @@ from server import MAX_REQUEST_BODY_BYTES, Handler, compact_error, header_latin1
 class ProxyCoreTests(unittest.TestCase):
     def test_supported_adapter_paths_are_explicit(self):
         self.assertEqual(adapter_for_path("/v1/responses"), OPENAI_RESPONSES_ADAPTER)
+        self.assertEqual(
+            adapter_for_path("/v1/chat/completions"), OPENAI_CHAT_COMPLETIONS_ADAPTER
+        )
         self.assertEqual(adapter_for_path("/v1/messages"), ANTHROPIC_MESSAGES_ADAPTER)
         self.assertEqual(
             adapter_for_path("/v1/messages/count_tokens"), ANTHROPIC_MESSAGES_ADAPTER
         )
-        self.assertIsNone(adapter_for_path("/v1/chat/completions"))
+        self.assertIsNone(adapter_for_path("/v1beta/models/gemini:generateContent"))
 
     def test_anthropic_messages_and_count_tokens_use_provider_credentials(self):
         class AnthropicUpstream(Handler):
@@ -318,6 +322,13 @@ class ProxyCoreTests(unittest.TestCase):
             b'"delta":"ordinary text containing event: error"}\n\n'
         )
         self.assertEqual(ordinary_text, "productive")
+
+    def test_openai_chat_completions_sse_is_productive(self):
+        outcome, _ = inspect_sse_prime(
+            b'data: {"id":"chatcmpl_test","choices":[{"delta":{"content":"ok"},"index":0}]}'
+            b"\n\n"
+        )
+        self.assertEqual(outcome, "productive")
 
     def test_error_compaction_redacts_provider_credentials(self):
         redacted = compact_error("upstream echoed Bearer sk-sensitive-provider-key")
@@ -739,8 +750,9 @@ class ProxyCoreTests(unittest.TestCase):
             self.assertEqual(data["language.simplifiedChinese"], "简体中文")
             self.assertEqual(
                 data["dialog.protocolSupport"],
-                "Supported only for GPT/Codex (OpenAI Responses) and Claude "
-                "(Anthropic Messages). Other API protocols are not supported.",
+            "Supports GPT/Codex and Grok (OpenAI Responses), Gemini through an "
+            "OpenAI-compatible Chat Completions endpoint, and Claude (Anthropic "
+            "Messages). Other protocols are not supported.",
             )
         finally:
             connection.close()

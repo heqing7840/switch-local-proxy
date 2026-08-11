@@ -28,13 +28,20 @@ SAME_PROVIDER_502_RETRIES = 1
 CONTEXT_ESTIMATOR_VERSION = 2
 PRIVATE_SETTING_NAMES = {"upstream_url", "forced_model"}
 OPENAI_RESPONSES_ADAPTER = "openai_responses"
+OPENAI_CHAT_COMPLETIONS_ADAPTER = "openai_chat_completions"
 ANTHROPIC_MESSAGES_ADAPTER = "anthropic_messages"
-SUPPORTED_ADAPTERS = (OPENAI_RESPONSES_ADAPTER, ANTHROPIC_MESSAGES_ADAPTER)
+SUPPORTED_ADAPTERS = (
+    OPENAI_RESPONSES_ADAPTER,
+    OPENAI_CHAT_COMPLETIONS_ADAPTER,
+    ANTHROPIC_MESSAGES_ADAPTER,
+)
 
 
 def adapter_for_path(path: str) -> str | None:
     if path == "/v1/responses":
         return OPENAI_RESPONSES_ADAPTER
+    if path == "/v1/chat/completions":
+        return OPENAI_CHAT_COMPLETIONS_ADAPTER
     if path in {"/v1/messages", "/v1/messages/count_tokens"}:
         return ANTHROPIC_MESSAGES_ADAPTER
     return None
@@ -228,6 +235,19 @@ def inspect_sse_prime(payload: bytes) -> tuple[str, str | None]:
         "message_stop",
     }:
         return "productive", None
+
+    # OpenAI-compatible Chat Completions streams use choices[].delta/message.
+    for decoded in data_objects:
+        choices = decoded.get("choices")
+        if not isinstance(choices, list):
+            continue
+        for choice in choices:
+            if not isinstance(choice, dict):
+                continue
+            if isinstance(choice.get("delta"), dict) or isinstance(
+                choice.get("message"), dict
+            ) or choice.get("finish_reason") is not None:
+                return "productive", None
     return "pending", None
 
 

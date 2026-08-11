@@ -113,3 +113,15 @@
 
 - 问题：供应商把上下文窗口错误包装为 HTTP 200 的 JSON/SSE 错误时，代理会把请求级问题当成 Provider 故障，触发冷却并增加切换等待。
 - 最终结果：上下文错误继续允许尝试其它 Provider，但不设置冷却；全部候选都是上下文错误时返回 `400 context_length_exceeded`，其它 502/503/超时仍按故障转移处理。
+
+## 2026-08-11 - OpenAI Chat Completions 兼容适配
+
+- 需求：让同一份本地代理可以接入 Gemini 的 OpenAI 兼容入口，以及 Qwen、DeepSeek、Mistral 等常见兼容服务；同时保留 Grok 的 Responses 入口和 Claude 的 Messages 入口。
+- 最终结果：新增 `POST /v1/chat/completions` 适配器，复用现有认证、模型覆盖、重试、冷却、SSE 预检和事件记录；Chat Completions 流式首段通过 `choices[].delta/message/finish_reason` 判定已产生有效输出。
+- 边界：这是协议透传，不是格式转换；原生 Gemini `generateContent` 不支持。当前配置仍只有一个上游基地址和强制模型，若要同时配置不同供应商的不同上游，需要后续增加按 Provider 的上游配置。
+
+## 2026-08-11 - LaunchAgent bootstrap 兼容回退
+
+- 问题：本机图形登录域的 `launchctl bootstrap` 返回 `Input/output error`，导致安装脚本在构建成功后报安装失败，服务未被加载。
+- 验证：相同 plist 通过 `launchctl load -w` 成功加载，服务监听本机端口且 `doctor` 健康检查通过；因此不是 Python 进程、端口或渠道配置失败。
+- 最终结果：`run.sh install`、`repair` 和 `start` 共用加载函数。优先 `bootstrap`，若服务未加载再回退 `load -w`，随后必须通过原有健康检查才报告成功。

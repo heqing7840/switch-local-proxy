@@ -4,7 +4,7 @@
 
 A local AI API proxy with prioritized key routing, automatic failover, retries, cooldowns, and real-time provider monitoring.
 
-The proxy accepts OpenAI Responses and Anthropic Messages-compatible requests. Both adapters share the same provider priority, health, retry, cooldown, and monitoring model.
+The proxy accepts OpenAI Responses, OpenAI-compatible Chat Completions, and Anthropic Messages-compatible requests. All adapters share the same provider priority, health, retry, cooldown, and monitoring model.
 
 ## Features
 
@@ -12,7 +12,7 @@ The proxy accepts OpenAI Responses and Anthropic Messages-compatible requests. B
 - One same-provider retry for an HTTP 502 before failover.
 - Temporary cooldowns with automatic recovery probes.
 - Streaming SSE early-error detection before forwarding output.
-- OpenAI Responses and Anthropic Messages pass-through adapters.
+- OpenAI Responses, Chat Completions, and Anthropic Messages pass-through adapters.
 - Local dashboard for provider status, latency, failures, key hints, model routing, and request history.
 - Add, edit, delete, enable, disable, reorder, and restore providers from the dashboard.
 - No database or cloud control plane. Runtime state stays on the local machine.
@@ -125,7 +125,7 @@ The proxy does not retry after productive streaming output has already reached t
 
 ## Compatibility
 
-This release implements pass-through adapters for OpenAI Responses and Anthropic Messages. The configured upstream must support the wire protocol used by the client. An OpenAI-only upstream cannot serve Claude Code through this proxy without a separate request/response translation layer. Gemini and other protocols still require dedicated adapters.
+This release implements pass-through adapters for OpenAI Responses, OpenAI-compatible Chat Completions, and Anthropic Messages. Grok can use its OpenAI-compatible Responses endpoint. Gemini, Qwen, DeepSeek, Mistral, and similar services can use Chat Completions when their upstream exposes that compatibility endpoint. Native Gemini `generateContent` is not implemented. The configured upstream must support the wire protocol used by the client; this proxy does not translate request or response formats, and one local configuration still uses one upstream base URL and forced model for all paths.
 
 Claude Code gateway configuration follows the [official Claude Code LLM gateway guide](https://code.claude.com/docs/en/llm-gateway-connect). Anthropic request paths and headers follow the [Messages API reference](https://platform.claude.com/docs/en/api/messages/create).
 

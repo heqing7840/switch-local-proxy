@@ -41,6 +41,21 @@ wait_for_health() {
   return 1
 }
 
+load_launch_agent() {
+  local domain="gui/$(id -u)"
+  if launchctl bootstrap "$domain" "$PLIST" 2>/dev/null; then
+    return 0
+  fi
+  # Some macOS login sessions reject bootstrap with EIO even though the
+  # same per-user plist remains compatible with the legacy load command.
+  # Confirm the service state first so a harmless duplicate-load error is
+  # not treated as an installation failure.
+  if launchctl print "$domain/$LABEL" >/dev/null 2>&1; then
+    return 0
+  fi
+  launchctl load -w "$PLIST"
+}
+
 doctor() {
   [[ -n "$PYTHON" && -x "$PYTHON" ]] || { echo "FAIL: python3 不可用" >&2; return 1; }
   command -v curl >/dev/null || { echo "FAIL: curl 不可用" >&2; return 1; }
@@ -165,12 +180,10 @@ install_service() {
     fi
     sleep 0.1
   done
-  if ! launchctl bootstrap "gui/$(id -u)" "$PLIST" 2>/dev/null; then
-    launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || {
-      echo "LaunchAgent bootstrap failed" >&2
-      exit 1
-    }
-  fi
+  load_launch_agent || {
+    echo "LaunchAgent load failed" >&2
+    exit 1
+  }
   launchctl enable "gui/$(id -u)/$LABEL"
   launchctl kickstart -k "gui/$(id -u)/$LABEL"
   if ! wait_for_health; then
@@ -179,7 +192,7 @@ install_service() {
       cp -R "$backup_dir/dist/." "$DIST/"
       cp "$backup_dir/launch-agent.plist" "$PLIST"
       launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
-      launchctl bootstrap "gui/$(id -u)" "$PLIST"
+      load_launch_agent
       launchctl enable "gui/$(id -u)/$LABEL"
       launchctl kickstart -k "gui/$(id -u)/$LABEL"
       wait_for_health || true
@@ -202,7 +215,7 @@ migrate_codex() {
 start_service() {
   if ! launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1; then
     [[ -f "$PLIST" ]] || { echo "LaunchAgent 未安装，请运行 ./run.sh install" >&2; return 1; }
-    launchctl bootstrap "gui/$(id -u)" "$PLIST"
+    load_launch_agent
   fi
   launchctl enable "gui/$(id -u)/$LABEL"
   launchctl kickstart -k "gui/$(id -u)/$LABEL"

@@ -4,7 +4,7 @@
 
 一个本地 AI API 代理，提供多 Key 优先级路由、自动故障转移、重试、冷却和 Provider 状态监控。
 
-当前版本接收 OpenAI Responses 和 Anthropic Messages 兼容请求，两种适配器共用 Provider 优先级、健康状态、重试、冷却和监控逻辑。
+当前版本接收 OpenAI Responses、OpenAI 兼容 Chat Completions 和 Anthropic Messages 请求，所有适配器共用 Provider 优先级、健康状态、重试、冷却和监控逻辑。
 
 ## 功能
 
@@ -12,7 +12,7 @@
 - HTTP 502 在同一线路等待 1 秒重试一次，再决定是否切换。
 - 临时冷却和到期自动恢复探测。
 - 向客户端转发 SSE 前识别早期错误事件。
-- 支持 OpenAI Responses 和 Anthropic Messages 透传适配。
+- 支持 OpenAI Responses、Chat Completions 和 Anthropic Messages 透传适配。
 - 管理页显示线路状态、延迟、失败原因、脱敏 Key、模型路由和请求记录。
 - 支持在管理页添加、编辑、删除、启停、排序和恢复 Provider。
 - 不依赖数据库或云端控制台，运行状态保存在本机。
@@ -125,7 +125,7 @@ provider-name:provider-api-key
 
 ## 兼容范围
 
-当前版本实现 OpenAI Responses 与 Anthropic Messages 两种透传适配器。上游服务必须支持客户端使用的协议；如果上游只支持 OpenAI Responses，Claude Code 不能仅靠本代理直接使用，仍需要额外的请求与响应格式转换层。Gemini 等其他协议仍需增加对应适配器。
+当前版本实现 OpenAI Responses、OpenAI 兼容 Chat Completions 与 Anthropic Messages 三种透传适配器。Grok 可使用其 OpenAI 兼容 Responses 接口；Gemini、通义千问、DeepSeek、Mistral 等服务在提供 Chat Completions 兼容接口时可以接入。原生 Gemini `generateContent` 尚未实现。上游必须支持客户端使用的协议；代理不转换请求或响应格式，并且当前一份本地配置仍由所有路径共用同一个上游基地址和强制模型。
 
 Claude Code 配置依据 [Claude Code 官方 LLM Gateway 指南](https://code.claude.com/docs/en/llm-gateway-connect)，请求路径和请求头依据 [Anthropic Messages API](https://platform.claude.com/docs/en/api/messages/create)。
 

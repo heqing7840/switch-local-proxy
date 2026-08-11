@@ -211,7 +211,7 @@
           <label for="provider-name" data-i18n="dialog.providerName">Channel Name</label>
           <input id="provider-name" name="name" maxlength="80" autocomplete="off" required />
         </div>
-        <div class="protocol-support" data-i18n="dialog.protocolSupport">Supported only for GPT/Codex (OpenAI Responses) and Claude (Anthropic Messages). Other API protocols are not supported.</div>
+        <div class="protocol-support" data-i18n="dialog.protocolSupport">Supports GPT/Codex and Grok (OpenAI Responses), Gemini through an OpenAI-compatible Chat Completions endpoint, and Claude (Anthropic Messages). Other protocols are not supported.</div>
         <div class="field">
           <label for="provider-key" data-i18n="dialog.apiKey">API Key</label>
           <input id="provider-key" name="key" type="password" autocomplete="new-password" />
@@ -309,7 +309,7 @@
         document.querySelector("#available").textContent = `${ready} / ${data.providers.length}`;
         document.querySelector("#current").textContent = data.current_provider || t("status.noRequest");
         document.querySelector("#uptime").textContent = ago(data.uptime_seconds);
-        document.querySelector("#endpoint").textContent = `127.0.0.1:15722 · ${data.forced_model || "-"} · Responses + Messages`;
+        document.querySelector("#endpoint").textContent = `127.0.0.1:15722 · ${data.forced_model || "-"} · Responses + Chat Completions + Messages`;
         const cooldown = document.querySelector("#cooldown");
         if (document.activeElement !== cooldown) cooldown.value = Math.round(data.cooldown_seconds / 60);
         document.querySelector("#providers").innerHTML = data.providers.map((p, index) => `
@@ -340,7 +340,7 @@
           <div class="event">
             <div>${eventTime(item.at)}</div>
             <div>${esc(item.provider)}</div>
-            <div><div>${esc(item.requested_model && item.model && item.requested_model !== item.model ? `${item.requested_model} → ${item.model}` : (item.model || item.requested_model || "-"))}</div><div class="subtle">${item.adapter === "anthropic_messages" ? "Anthropic Messages" : "OpenAI Responses"} · ${t("history.inputEstimate", {value:item.input_estimator_version === 2 ? formatTokens(item.input_tokens_estimate) : "-"})}${item.retry_count ? ` · ${t("history.retryCount", {value:item.retry_count})}` : ""}</div></div>
+            <div><div>${esc(item.requested_model && item.model && item.requested_model !== item.model ? `${item.requested_model} → ${item.model}` : (item.model || item.requested_model || "-"))}</div><div class="subtle">${item.adapter === "anthropic_messages" ? "Anthropic Messages" : item.adapter === "openai_chat_completions" ? t("history.openaiChat") : "OpenAI Responses"} · ${t("history.inputEstimate", {value:item.input_estimator_version === 2 ? formatTokens(item.input_tokens_estimate) : "-"})}${item.retry_count ? ` · ${t("history.retryCount", {value:item.retry_count})}` : ""}</div></div>
             <div class="result ${item.result}">${item.result === "success" ? t("history.success") : t("history.failure")}</div>
             <div>${item.latency_ms == null ? "-" : `${item.latency_ms} ${t("unit.milliseconds")}`}</div>
             <div class="error">${esc(item.message === "请求成功" ? t("history.requestSucceeded") : item.message)}</div>
