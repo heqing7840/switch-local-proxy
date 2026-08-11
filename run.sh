@@ -18,7 +18,7 @@ fi
 PORT="15722"
 
 usage() {
-  echo "Usage: ./run.sh build|privacy-check|verify|doctor|repair|import-keys SOURCE|install|migrate|start|stop|status|open"
+  echo "Usage: ./run.sh build|privacy-check|verify|doctor|repair|install|migrate|start|stop|status|open"
 }
 
 health_check() {
@@ -60,26 +60,23 @@ doctor() {
   [[ -n "$PYTHON" && -x "$PYTHON" ]] || { echo "FAIL: python3 不可用" >&2; return 1; }
   command -v curl >/dev/null || { echo "FAIL: curl 不可用" >&2; return 1; }
   command -v rg >/dev/null || { echo "FAIL: rg 不可用" >&2; return 1; }
-  [[ -f "$ROOT/key.txt" ]] || { echo "FAIL: 项目 key.txt 不存在" >&2; return 1; }
   "$PYTHON" - "$ROOT" "$STATE_DIR" <<'PY'
 import json
-import os
+import sqlite3
 import sys
 from pathlib import Path
 
 root, state_dir = map(Path, sys.argv[1:])
 sys.path.insert(0, str(root / "src"))
-from proxy_core import parse_key_text
+from proxy_core import ProxyStore
 
-key_file = root / "key.txt"
-keys = parse_key_text(key_file.read_text(encoding="utf-8"))
-assert keys, "key.txt 中没有有效渠道"
-assert os.stat(key_file).st_mode & 0o777 == 0o600, "key.txt 权限必须为 600"
-for filename in ("settings.json", "runtime.json"):
-    path = state_dir / filename
-    if path.exists():
-        assert isinstance(json.loads(path.read_text(encoding="utf-8")), dict), f"{filename} 格式无效"
-print(f"配置检查通过：{len(keys)} 个渠道，未输出密钥")
+database = state_dir / "proxy.sqlite3"
+assert database.is_file(), "本机 SQLite 数据库不存在"
+with sqlite3.connect(database) as connection:
+    connection.execute("SELECT 1 FROM proxy_data LIMIT 1").fetchone()
+store = ProxyStore(state_dir)
+assert store.load_keys(), "SQLite 中没有有效渠道"
+print(f"配置检查通过：{len(store.load_keys())} 个渠道，未输出密钥")
 PY
   plutil -lint "$PLIST" >/dev/null
   launchctl print "gui/$(id -u)/$LABEL" >/dev/null 2>&1 || {
@@ -170,7 +167,7 @@ install_service() {
   mkdir -p "$STATE_DIR" "$HOME/Library/LaunchAgents"
   chmod 700 "$STATE_DIR"
   "$PYTHON" "$ROOT/support/render_launch_agent.py" \
-    "$STATE_DIR/$LABEL.plist" "$LABEL" "$PYTHON" "$DIST/server.py" "$DIST" "$ROOT/key.txt" "$STATE_DIR" "$PORT"
+    "$STATE_DIR/$LABEL.plist" "$LABEL" "$PYTHON" "$DIST/server.py" "$DIST" "$STATE_DIR" "$PORT"
   cp "$STATE_DIR/$LABEL.plist" "$PLIST"
   plutil -lint "$PLIST"
   launchctl bootout "gui/$(id -u)/$LABEL" 2>/dev/null || true
@@ -235,21 +232,12 @@ status_service() {
   curl -fsS "http://127.0.0.1:$PORT/api/health" | "$PYTHON" -m json.tool
 }
 
-import_keys() {
-  local source="${2:-}"
-  [[ -n "$source" ]] || { echo "Usage: ./run.sh import-keys /path/to/source/key.txt" >&2; return 1; }
-  "$PYTHON" "$ROOT/support/import_keys.py" \
-    "$source" \
-    "$ROOT/key.txt"
-}
-
 case "${1:-}" in
   build) build ;;
   privacy-check) "$PYTHON" "$ROOT/support/privacy_scan.py" --root "$ROOT" ;;
   verify) verify ;;
   doctor) doctor ;;
   repair) install_service ;;
-  import-keys) import_keys "$@" ;;
   install) install_service ;;
   migrate) migrate_codex ;;
   start) start_service ;;

@@ -61,6 +61,13 @@
   "dialog.providerName": "渠道名称",
   "dialog.apiKey": "API Key",
   "dialog.protocolSupport": "支持 GPT/Codex、Grok（OpenAI Responses）、通过 OpenAI 兼容 Chat Completions 接口接入 Gemini，以及 Claude（Anthropic Messages）；不支持其它协议。",
+  "dialog.apiUrl": "API 地址",
+  "dialog.apiUrlHelp": "留空表示使用全局默认上游地址；不要在地址中填写账号密码。",
+  "dialog.model": "默认模型",
+  "dialog.protocol": "协议",
+  "dialog.protocolAuto": "自动匹配请求",
+  "dialog.protocolResponses": "OpenAI Responses",
+  "dialog.protocolChat": "OpenAI Chat Completions",
   "dialog.currentKey": "当前密钥：{key}",
   "dialog.keyHelpAdd": "密钥仅保存在本机，不会在页面或状态接口中显示。",
   "dialog.keyHelpEdit": "留空表示不修改现有密钥；密钥不会被页面读取或回显。",
@@ -88,4 +95,6 @@
   "time.hoursMinutes": "{hours}小时{minutes}分钟",
   "unit.milliseconds": "毫秒",
   "unit.tenThousandTokens": "万 token"
+  ,"queue.routeCustom": "独立上游"
+  ,"queue.routeDefault": "全局上游"
 }

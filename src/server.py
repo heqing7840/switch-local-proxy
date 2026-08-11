@@ -40,13 +40,6 @@ STATE_DIR = Path(
         os.environ.get("CODEX_KEY_PROXY_STATE_DIR", "~/.switch-local-proxy"),
     )
 ).expanduser()
-KEY_FILE = Path(
-    os.environ.get(
-        "SWITCH_LOCAL_PROXY_KEY_FILE",
-        os.environ.get("CODEX_KEY_PROXY_KEY_FILE", str(APP_DIR.parent / "key.txt")),
-    )
-)
-
 UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
 UPDATE_FAILURE_RETRY_SECONDS = 15 * 60
 UPDATE_FETCH_TIMEOUT_SECONDS = 2
@@ -138,7 +131,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(message)s",
 )
-STORE = ProxyStore(STATE_DIR, KEY_FILE)
+STORE = ProxyStore(STATE_DIR)
 UPDATE_CHECKER = UpdateChecker(VERSION_FILE, STATE_DIR)
 CLIENT = httpx.Client(
     timeout=httpx.Timeout(connect=10, read=95, write=30, pool=10),
@@ -224,7 +217,13 @@ class Handler(BaseHTTPRequestHandler):
         if parsed.path == "/api/providers":
             body = self._read_json()
             try:
-                STORE.create_provider(str(body.get("name", "")), str(body.get("key", "")))
+                STORE.create_provider(
+                    str(body.get("name", "")),
+                    str(body.get("key", "")),
+                    str(body.get("upstream_url", "")),
+                    str(body.get("forced_model", "")),
+                    str(body.get("protocol", "auto")),
+                )
             except ValueError as error:
                 self._send_json(400, {"error": {"message": str(error)}})
                 return
@@ -269,6 +268,9 @@ class Handler(BaseHTTPRequestHandler):
                     str(body.get("old_name", "")),
                     str(body.get("name", "")),
                     str(body.get("key", "")),
+                    body.get("upstream_url"),
+                    body.get("forced_model"),
+                    body.get("protocol"),
                 )
             except KeyError:
                 self._send_json(404, {"error": {"message": "渠道不存在"}})
@@ -370,14 +372,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         requested_model = str(request_json.get("model") or "")
-        upstream_model = str(STORE.settings["forced_model"])
-        request_json["model"] = upstream_model
-        payload = json.dumps(request_json, ensure_ascii=False, separators=(",", ":")).encode()
         request_id = f"{time.time_ns():x}"
-        input_tokens_estimate = estimate_input_tokens(payload)
         upstream_path = self.path
-        upstream_url = STORE.settings["upstream_base_url"].rstrip("/") + upstream_path[3:]
-        providers = STORE.eligible_providers()
+        providers = STORE.eligible_providers(adapter)
         if not providers:
             STORE.set_active_provider(None)
             self._send_all_unavailable([])
@@ -386,6 +383,12 @@ class Handler(BaseHTTPRequestHandler):
         failures: list[dict[str, str]] = []
         for index, provider in enumerate(providers):
             STORE.set_active_provider(provider["name"])
+            upstream_model = STORE.provider_model(provider)
+            provider_payload = dict(request_json)
+            provider_payload["model"] = upstream_model
+            payload = json.dumps(provider_payload, ensure_ascii=False, separators=(",", ":")).encode()
+            input_tokens_estimate = estimate_input_tokens(payload)
+            upstream_url = STORE.provider_upstream_url(provider) + upstream_path[3:]
             retry_count = 0
             while True:
                 started = time.monotonic()

@@ -7,11 +7,11 @@ from pathlib import Path
 
 
 def main() -> None:
-    if len(sys.argv) != 9:
+    if len(sys.argv) != 8:
         raise SystemExit(
-            "usage: render_launch_agent.py OUTPUT LABEL PYTHON SERVER WORKDIR KEY_FILE STATE_DIR PORT"
+            "usage: render_launch_agent.py OUTPUT LABEL PYTHON SERVER WORKDIR STATE_DIR PORT"
         )
-    output, label, python, server, workdir, key_file, state_dir, port = sys.argv[1:]
+    output, label, python, server, workdir, state_dir, port = sys.argv[1:]
     payload = {
         "Label": label,
         "ProgramArguments": [python, server],
@@ -19,7 +19,6 @@ def main() -> None:
         "EnvironmentVariables": {
             "SWITCH_LOCAL_PROXY_HOST": "127.0.0.1",
             "SWITCH_LOCAL_PROXY_PORT": port,
-            "SWITCH_LOCAL_PROXY_KEY_FILE": key_file,
             "SWITCH_LOCAL_PROXY_STATE_DIR": state_dir,
         },
         "RunAtLoad": True,

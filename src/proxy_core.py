@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import sqlite3
 import tempfile
 import threading
 import time
@@ -35,6 +36,8 @@ SUPPORTED_ADAPTERS = (
     OPENAI_CHAT_COMPLETIONS_ADAPTER,
     ANTHROPIC_MESSAGES_ADAPTER,
 )
+PROVIDER_PROTOCOL_AUTO = "auto"
+SUPPORTED_PROVIDER_PROTOCOLS = (PROVIDER_PROTOCOL_AUTO,) + SUPPORTED_ADAPTERS
 
 
 def adapter_for_path(path: str) -> str | None:
@@ -83,7 +86,23 @@ def parse_private_settings(text: str) -> dict[str, str]:
 
 def valid_upstream_url(value: str) -> bool:
     parsed = urlparse(value)
-    return parsed.scheme in {"http", "https"} and bool(parsed.netloc)
+    return (
+        len(value) <= 500
+        and parsed.scheme in {"http", "https"}
+        and bool(parsed.netloc)
+        and not parsed.username
+        and not parsed.password
+        and not parsed.fragment
+    )
+
+
+def normalize_provider_protocol(value: Any) -> str:
+    protocol = str(value or PROVIDER_PROTOCOL_AUTO).strip()
+    return protocol if protocol in SUPPORTED_PROVIDER_PROTOCOLS else PROVIDER_PROTOCOL_AUTO
+
+
+def normalize_provider_model(value: Any) -> str:
+    return str(value or "").strip()[:100]
 
 
 def validate_provider_name(value: str) -> str:
@@ -264,13 +283,16 @@ def atomic_write_json(path: Path, value: dict[str, Any]) -> None:
 
 
 class ProxyStore:
-    def __init__(self, state_dir: Path, key_file: Path):
+    def __init__(self, state_dir: Path, legacy_secret_file: Path | None = None):
         self.state_dir = state_dir
-        self.key_file = key_file
+        self.legacy_secret_file = legacy_secret_file
+        self.db_path = state_dir / "proxy.sqlite3"
         self.settings_path = state_dir / "settings.json"
         self.runtime_path = state_dir / "runtime.json"
         self.events_path = state_dir / "events.jsonl"
         self.lock = threading.RLock()
+        self.state_dir.mkdir(parents=True, exist_ok=True)
+        self._init_db()
         self.started_at = time.time()
         self.last_switch: dict[str, Any] | None = None
         self.active_provider: str | None = None
@@ -278,13 +300,44 @@ class ProxyStore:
         self.runtime = self._load_runtime()
         self.events = self._load_events()
 
-    def _default_settings(self) -> dict[str, Any]:
+    def _init_db(self) -> None:
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                "CREATE TABLE IF NOT EXISTS proxy_data (name TEXT PRIMARY KEY, value TEXT NOT NULL)"
+            )
+
+    def _db_read(self, name: str, default: Any) -> Any:
+        with sqlite3.connect(self.db_path) as connection:
+            row = connection.execute("SELECT value FROM proxy_data WHERE name = ?", (name,)).fetchone()
+        if not row:
+            return default
         try:
-            key_text = self.key_file.read_text(encoding="utf-8")
-            names = list(parse_key_text(key_text))
-            private = parse_private_settings(key_text)
-        except OSError:
-            names = list(DEFAULT_PROVIDER_NAMES)
+            return json.loads(row[0])
+        except json.JSONDecodeError:
+            return default
+
+    def _db_write(self, name: str, value: Any) -> None:
+        encoded = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        with sqlite3.connect(self.db_path) as connection:
+            connection.execute(
+                "INSERT INTO proxy_data(name, value) VALUES(?, ?) ON CONFLICT(name) DO UPDATE SET value=excluded.value",
+                (name, encoded),
+            )
+
+    def _save_settings(self) -> None:
+        self._db_write("settings", self.settings)
+
+    def _default_settings(self) -> dict[str, Any]:
+        if self.legacy_secret_file is not None:
+            try:
+                key_text = self.legacy_secret_file.read_text(encoding="utf-8")
+                names = list(parse_key_text(key_text))
+                private = parse_private_settings(key_text)
+            except OSError:
+                names = []
+                private = {}
+        else:
+            names = []
             private = {}
         upstream_url = (
             os.environ.get("SWITCH_LOCAL_PROXY_UPSTREAM_URL")
@@ -309,8 +362,10 @@ class ProxyStore:
     def _load_settings(self) -> dict[str, Any]:
         default = self._default_settings()
         try:
-            saved = json.loads(self.settings_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            saved = self._db_read("settings", {})
+            if not saved and self.settings_path.exists():
+                saved = json.loads(self.settings_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
             saved = {}
         if not isinstance(saved, dict):
             saved = {}
@@ -332,7 +387,11 @@ class ProxyStore:
             key_names = list(self.load_keys())
         except OSError:
             key_names = []
-        ordered_names = [item["name"] for item in default["providers"]]
+        ordered_names = (
+            []
+            if isinstance(saved.get("providers"), list)
+            else [item["name"] for item in default["providers"]]
+        )
         for item in sorted(
             saved_providers.values(),
             key=lambda value: safe_int(value.get("priority"), 999),
@@ -350,16 +409,22 @@ class ProxyStore:
                     "name": name,
                     "enabled": bool(item.get("enabled", True)),
                     "priority": safe_int(item.get("priority"), index + 1),
+                    "upstream_url": str(item.get("upstream_url") or "").rstrip("/"),
+                    "forced_model": normalize_provider_model(item.get("forced_model")),
+                    "protocol": normalize_provider_protocol(item.get("protocol")),
                 }
             )
         default["providers"] = self._normalize_priorities(providers)
-        atomic_write_json(self.settings_path, default)
+        self.settings = default
+        self._save_settings()
         return default
 
     def _load_runtime(self) -> dict[str, dict[str, Any]]:
         try:
-            saved = json.loads(self.runtime_path.read_text(encoding="utf-8"))
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+            saved = self._db_read("runtime", {})
+            if not saved and self.runtime_path.exists():
+                saved = json.loads(self.runtime_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
             saved = {}
         if not isinstance(saved, dict):
             saved = {}
@@ -374,13 +439,10 @@ class ProxyStore:
                 cleared_context_cooldown = True
             runtime[name] = state
         if cleared_context_cooldown:
-            atomic_write_json(
-                self.runtime_path,
-                {
-                    name: {key: value for key, value in state.items() if key != "probing"}
-                    for name, state in runtime.items()
-                },
-            )
+            self._db_write("runtime", {
+                name: {key: value for key, value in state.items() if key != "probing"}
+                for name, state in runtime.items()
+            })
         return runtime
 
     @staticmethod
@@ -415,18 +477,12 @@ class ProxyStore:
 
     def _load_events(self) -> list[dict[str, Any]]:
         try:
-            lines = self.events_path.read_text(encoding="utf-8").splitlines()[-200:]
+            saved = self._db_read("events", [])
+            if isinstance(saved, list):
+                return [item for item in saved[-200:] if isinstance(item, dict)]
         except OSError:
             return []
-        events = []
-        for line in lines:
-            try:
-                event = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(event, dict):
-                events.append(event)
-        return events
+        return []
 
     def _append_event(
         self,
@@ -458,10 +514,7 @@ class ProxyStore:
         }
         self.events.append(event)
         self.events = self.events[-200:]
-        self.events_path.parent.mkdir(parents=True, exist_ok=True)
-        with self.events_path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(event, ensure_ascii=False, separators=(",", ":")) + "\n")
-        os.chmod(self.events_path, 0o600)
+        self._db_write("events", self.events)
 
     @staticmethod
     def _normalize_priorities(providers: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -471,48 +524,77 @@ class ProxyStore:
         return ordered
 
     def load_keys(self) -> dict[str, str]:
-        return parse_key_text(self.key_file.read_text(encoding="utf-8"))
+        saved = self._db_read("keys", None)
+        if isinstance(saved, dict):
+            return {str(name): str(value) for name, value in saved.items()}
+        try:
+            legacy = parse_key_text(self.legacy_secret_file.read_text(encoding="utf-8")) if self.legacy_secret_file else {}
+        except OSError:
+            legacy = {}
+        if legacy:
+            self._db_write("keys", legacy)
+        return legacy
 
     def _write_keys(self, keys: dict[str, str]) -> None:
-        try:
-            private = parse_private_settings(self.key_file.read_text(encoding="utf-8"))
-        except OSError:
-            private = {}
-        self.key_file.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=self.key_file.parent, delete=False
-        ) as handle:
-            for name in ("upstream_url", "forced_model"):
-                if private.get(name):
-                    handle.write(f"{name}:{private[name]}\n")
-            for name, key in keys.items():
-                handle.write(f"{name}:{key}\n")
-            temp_name = handle.name
-        os.chmod(temp_name, 0o600)
-        os.replace(temp_name, self.key_file)
+        self._db_write("keys", keys)
 
-    def create_provider(self, name: str, key: str) -> None:
+    def create_provider(
+        self,
+        name: str,
+        key: str,
+        upstream_url: str = "",
+        forced_model: str = "",
+        protocol: str = PROVIDER_PROTOCOL_AUTO,
+    ) -> None:
         name = validate_provider_name(name)
         key = validate_provider_key(key)
+        upstream_url = upstream_url.strip().rstrip("/")
+        if upstream_url and not valid_upstream_url(upstream_url):
+            raise ValueError("API 地址必须是无账号密码的 http(s) 地址")
+        forced_model = normalize_provider_model(forced_model)
+        protocol = normalize_provider_protocol(protocol)
         with self.lock:
             providers = self._normalize_priorities(list(self.settings["providers"]))
             if len(providers) >= MAX_PROVIDERS:
                 raise ValueError(f"最多支持 {MAX_PROVIDERS} 个渠道")
             if any(item["name"] == name for item in providers):
                 raise ValueError("渠道名称已存在")
-            keys = self.load_keys() if self.key_file.exists() else {}
+            keys = self.load_keys()
             keys[name] = key
-            providers.append({"name": name, "enabled": True, "priority": len(providers) + 1})
+            providers.append(
+                {
+                    "name": name,
+                    "enabled": True,
+                    "priority": len(providers) + 1,
+                    "upstream_url": upstream_url,
+                    "forced_model": forced_model,
+                    "protocol": protocol,
+                }
+            )
             self._write_keys(keys)
             self.runtime[name] = self._runtime_state()
             self.settings["providers"] = self._normalize_priorities(providers)
-            atomic_write_json(self.settings_path, self.settings)
+            self._save_settings()
             self._save_runtime()
 
-    def update_provider(self, old_name: str, name: str, key: str | None = None) -> None:
+    def update_provider(
+        self,
+        old_name: str,
+        name: str,
+        key: str | None = None,
+        upstream_url: str | None = None,
+        forced_model: str | None = None,
+        protocol: str | None = None,
+    ) -> None:
         old_name = validate_provider_name(old_name)
         name = validate_provider_name(name)
         new_key = validate_provider_key(key) if key and key.strip() else None
+        if upstream_url is not None and upstream_url.strip():
+            upstream_url = upstream_url.strip().rstrip("/")
+            if not valid_upstream_url(upstream_url):
+                raise ValueError("API 地址必须是无账号密码的 http(s) 地址")
+        normalized_model = normalize_provider_model(forced_model) if forced_model is not None else None
+        normalized_protocol = normalize_provider_protocol(protocol) if protocol is not None else None
         with self.lock:
             providers = self._normalize_priorities(list(self.settings["providers"]))
             index = next(
@@ -522,7 +604,7 @@ class ProxyStore:
                 raise KeyError(old_name)
             if name != old_name and any(item["name"] == name for item in providers):
                 raise ValueError("渠道名称已存在")
-            keys = self.load_keys() if self.key_file.exists() else {}
+            keys = self.load_keys()
             existing_key = keys.get(old_name)
             if new_key is None and existing_key is None:
                 raise ValueError("该渠道缺少密钥，请输入新密钥")
@@ -535,6 +617,12 @@ class ProxyStore:
             if old_name not in keys:
                 ordered_keys[name] = new_key or ""
             providers[index]["name"] = name
+            if upstream_url is not None and upstream_url.strip():
+                providers[index]["upstream_url"] = upstream_url.strip().rstrip("/")
+            if normalized_model:
+                providers[index]["forced_model"] = normalized_model
+            if normalized_protocol is not None:
+                providers[index]["protocol"] = normalized_protocol
             if name != old_name:
                 self.runtime[name] = self.runtime.pop(old_name, self._runtime_state())
                 if self.active_provider == old_name:
@@ -543,7 +631,7 @@ class ProxyStore:
                     self.last_switch["provider"] = name
             self._write_keys(ordered_keys)
             self.settings["providers"] = providers
-            atomic_write_json(self.settings_path, self.settings)
+            self._save_settings()
             self._save_runtime()
 
     def delete_provider(self, name: str) -> None:
@@ -552,7 +640,7 @@ class ProxyStore:
             providers = self._normalize_priorities(list(self.settings["providers"]))
             if not any(item["name"] == name for item in providers):
                 raise KeyError(name)
-            keys = self.load_keys() if self.key_file.exists() else {}
+            keys = self.load_keys()
             keys.pop(name, None)
             providers = [item for item in providers if item["name"] != name]
             self._write_keys(keys)
@@ -560,10 +648,10 @@ class ProxyStore:
             if self.active_provider == name:
                 self.active_provider = None
             self.settings["providers"] = self._normalize_priorities(providers)
-            atomic_write_json(self.settings_path, self.settings)
+            self._save_settings()
             self._save_runtime()
 
-    def eligible_providers(self) -> list[dict[str, Any]]:
+    def eligible_providers(self, adapter: str | None = None) -> list[dict[str, Any]]:
         keys = self.load_keys()
         now = time.time()
         with self.lock:
@@ -571,6 +659,11 @@ class ProxyStore:
             for provider in self._normalize_priorities(list(self.settings["providers"])):
                 state = self.runtime[provider["name"]]
                 if not provider["enabled"] or provider["name"] not in keys:
+                    continue
+                if adapter and provider.get("protocol", PROVIDER_PROTOCOL_AUTO) not in {
+                    PROVIDER_PROTOCOL_AUTO,
+                    adapter,
+                }:
                     continue
                 if state["cooldown_until"] > now or state["probing"]:
                     continue
@@ -583,9 +676,18 @@ class ProxyStore:
                         "key": keys[provider["name"]],
                         "priority": provider["priority"],
                         "was_cooling": was_cooling,
+                        "upstream_url": provider.get("upstream_url", ""),
+                        "forced_model": provider.get("forced_model", ""),
+                        "protocol": provider.get("protocol", PROVIDER_PROTOCOL_AUTO),
                     }
                 )
             return result
+
+    def provider_upstream_url(self, provider: dict[str, Any]) -> str:
+        return str(provider.get("upstream_url") or self.settings["upstream_base_url"]).rstrip("/")
+
+    def provider_model(self, provider: dict[str, Any]) -> str:
+        return str(provider.get("forced_model") or self.settings["forced_model"])
 
     def set_active_provider(self, name: str | None) -> None:
         with self.lock:
@@ -691,7 +793,7 @@ class ProxyStore:
             name: {key: value for key, value in state.items() if key != "probing"}
             for name, state in self.runtime.items()
         }
-        atomic_write_json(self.runtime_path, serializable)
+        self._db_write("runtime", serializable)
 
     def status(self) -> dict[str, Any]:
         now = time.time()
@@ -700,7 +802,7 @@ class ProxyStore:
             key_error = None
         except OSError:
             keys = {}
-            key_error = "key file could not be read"
+            key_error = "credential store could not be read"
         with self.lock:
             last_success_provider = None
             if self.runtime and any(
@@ -738,6 +840,9 @@ class ProxyStore:
                         "failure_count": state["failure_count"],
                         "has_key": provider["name"] in keys,
                         "key_hint": mask_provider_key(keys.get(provider["name"], "")),
+                        "protocol": provider.get("protocol", PROVIDER_PROTOCOL_AUTO),
+                        "forced_model": provider.get("forced_model") or self.settings["forced_model"],
+                        "has_custom_upstream": bool(provider.get("upstream_url")),
                         "is_current": provider["name"] == current_provider,
                         "max_success_input_tokens": state["max_success_input_tokens"] or None,
                         "min_context_failure_tokens": state["min_context_failure_tokens"] or None,
@@ -770,7 +875,7 @@ class ProxyStore:
     def update_cooldown(self, seconds: int) -> None:
         with self.lock:
             self.settings["cooldown_seconds"] = max(60, min(3600, int(seconds)))
-            atomic_write_json(self.settings_path, self.settings)
+            self._save_settings()
 
     def provider_action(self, name: str, action: str) -> None:
         with self.lock:
@@ -795,7 +900,7 @@ class ProxyStore:
             for position, item in enumerate(providers):
                 item["priority"] = position + 1
             self.settings["providers"] = providers
-            atomic_write_json(self.settings_path, self.settings)
+            self._save_settings()
 
     def reset_all(self) -> None:
         with self.lock:
@@ -806,6 +911,4 @@ class ProxyStore:
     def clear_events(self) -> None:
         with self.lock:
             self.events = []
-            self.events_path.parent.mkdir(parents=True, exist_ok=True)
-            self.events_path.write_text("", encoding="utf-8")
-            os.chmod(self.events_path, 0o600)
+            self._db_write("events", self.events)

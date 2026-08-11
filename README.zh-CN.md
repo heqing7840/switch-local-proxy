@@ -35,26 +35,18 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-创建被 Git 忽略的本机 `key.txt`，不要提交该文件：
-
-```text
-upstream_url:<your-upstream-api-base>/v1
-forced_model:<your-model-name>
-provider-one:<your-api-key>
-provider-two:<your-api-key>
-```
+首次启动会在被忽略的 `runtime/` 目录中创建本机 SQLite 数据库。请在管理页添加渠道；密钥只保存在该数据库中，不会提交到 GitHub。
 
 然后运行：
 
 ```bash
-chmod 600 key.txt
 ./run.sh verify
 ./run.sh install
 ./run.sh doctor
 ./run.sh open
 ```
 
-管理页会在本机打开。客户端只需要连接本地 `/v1` 接口，不需要知道上游 Key；代理只从本机被忽略的 `key.txt` 读取它们。
+管理页会在本机打开。客户端只需要连接本地 `/v1` 接口，不需要知道上游密钥；代理只从本机 SQLite 数据库读取它们。
 
 ## 更新检查
 
@@ -92,32 +84,17 @@ claude
 
 适配器会保留 `anthropic-version`、`anthropic-beta` 等 Anthropic 请求头，将模型替换为 `forced_model`，并识别 Anthropic 流式 SSE 事件。
 
-## 导入已有 Key
-
-可以从另一个本地文件导入 Provider：
-
-```bash
-./run.sh import-keys /absolute/path/to/source/key.txt
-```
-
-导入器会复制 Provider Key 行，以及可选的 `upstream_url` 和 `forced_model`，不会输出 Key 内容。
-
 ## 配置格式
 
-每条 Provider 使用以下格式：
-
-```text
-provider-name:provider-api-key
-```
-
-可选配置项：
+每条渠道在管理页中配置，并保存到本机 SQLite。可选配置项：
 
 | 配置项 | 含义 |
 | --- | --- |
-| `upstream_url` | 当前适配器使用的上游基地址，需要 `/v1` 时一并写入 |
+| `upstream_url` | 该渠道独立的 API 前缀；留空则继承全局默认地址 |
 | `forced_model` | 实际发送给上游的模型名 |
+| `protocol` | `auto`、`openai_responses`、`openai_chat_completions` 或 `anthropic_messages` |
 
-管理页把非敏感路由状态保存到被忽略的 `runtime/`；Key 和私有上游地址只保存在 `key.txt`，不会由状态接口返回。
+管理页把密钥、渠道配置、运行状态和请求记录保存到被忽略的 `runtime/proxy.sqlite3`；完整密钥和私有 API 地址不会由状态接口返回。
 
 ## 故障转移策略
 

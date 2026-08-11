@@ -1,5 +1,6 @@
 import json
 import http.client
+import sqlite3
 import sys
 import tempfile
 import threading
@@ -416,7 +417,7 @@ class ProxyCoreTests(unittest.TestCase):
             key_file = Path(directory) / "private" / "key.txt"
             store = ProxyStore(Path(directory) / "state", key_file)
             status = store.status()
-            self.assertEqual(status["key_error"], "key file could not be read")
+            self.assertIsNone(status["key_error"])
             self.assertNotIn(str(key_file), json.dumps(status))
 
     def test_json_error_envelope_is_detected(self):
@@ -445,8 +446,12 @@ class ProxyCoreTests(unittest.TestCase):
             first = status["providers"][0]
             self.assertEqual(first["health"], "cooling")
             self.assertGreater(first["cooldown_remaining"], 0)
-            persisted = (root / "state" / "settings.json").read_text(encoding="utf-8")
-            persisted += (root / "state" / "runtime.json").read_text(encoding="utf-8")
+            with sqlite3.connect(root / "state" / "proxy.sqlite3") as connection:
+                persisted = json.dumps(
+                    connection.execute(
+                        "SELECT value FROM proxy_data WHERE name != 'keys'"
+                    ).fetchall()
+                )
             self.assertNotIn("sk-secret", persisted)
             events = store.status()["events"]
             self.assertEqual(events[0]["result"], "failure")
@@ -521,6 +526,37 @@ class ProxyCoreTests(unittest.TestCase):
             self.assertEqual(
                 [item["name"] for item in store.status()["providers"]],
                 ["低价渠道", "快速渠道"],
+            )
+
+    def test_provider_specific_upstream_model_and_protocol_are_isolated(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "credentials.txt"
+            key_file.write_text("responses:sk-responses-provider\nchat:sk-chat-provider\n", encoding="utf-8")
+            store = ProxyStore(root / "state", key_file)
+            store.update_provider(
+                "responses",
+                "responses",
+                upstream_url="https://responses.example.invalid/v1",
+                forced_model="responses-model",
+                protocol=OPENAI_RESPONSES_ADAPTER,
+            )
+            store.update_provider(
+                "chat",
+                "chat",
+                upstream_url="https://chat.example.invalid/v1beta/openai",
+                forced_model="chat-model",
+                protocol=OPENAI_CHAT_COMPLETIONS_ADAPTER,
+            )
+
+            responses = store.eligible_providers(OPENAI_RESPONSES_ADAPTER)
+            chat = store.eligible_providers(OPENAI_CHAT_COMPLETIONS_ADAPTER)
+            self.assertEqual([item["name"] for item in responses], ["responses"])
+            self.assertEqual([item["name"] for item in chat], ["chat"])
+            self.assertEqual(store.provider_model(responses[0]), "responses-model")
+            self.assertEqual(
+                store.provider_upstream_url(chat[0]),
+                "https://chat.example.invalid/v1beta/openai",
             )
 
     def test_provider_create_update_and_delete_never_exposes_key(self):

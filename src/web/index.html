@@ -112,13 +112,15 @@
       .dialog-close { border: 0; background: transparent; color: #737a84; font-size: 24px; line-height: 1; padding: 2px 4px; }
       .provider-form { padding: 20px; }
       .field { display: grid; gap: 7px; margin-bottom: 16px; }
+      .field-grid { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); gap: 12px; }
       .field label { font-size: 13px; font-weight: 650; }
-      .field input { width: 100%; height: 40px; border: 1px solid #cbd0d7; border-radius: 6px; padding: 0 10px; outline: none; }
+      .field input, .field select { width: 100%; height: 40px; border: 1px solid #cbd0d7; border-radius: 6px; padding: 0 10px; outline: none; background: #fff; }
       .field input:focus { border-color: #168f61; box-shadow: 0 0 0 3px rgba(22, 143, 97, .12); }
       .field-help { color: #777e88; font-size: 12px; line-height: 1.45; }
       .protocol-support { margin: -2px 0 16px; color: #4f5965; font-size: 12px; line-height: 1.5; }
       .dialog-actions { display: flex; justify-content: space-between; align-items: center; gap: 10px; margin-top: 22px; }
       .dialog-actions-right { display: flex; gap: 8px; margin-left: auto; }
+      @media (max-width: 520px) { .field-grid { grid-template-columns: 1fr; gap: 0; } }
       @media (max-width: 900px) {
         .summary { grid-template-columns: repeat(2, 1fr); }
         .metric:nth-child(2) { border-right: 0; }
@@ -220,6 +222,26 @@
           <input id="provider-name" name="name" maxlength="80" autocomplete="off" required />
         </div>
         <div class="protocol-support" data-i18n="dialog.protocolSupport">Supports GPT/Codex and Grok (OpenAI Responses), Gemini through an OpenAI-compatible Chat Completions endpoint, and Claude (Anthropic Messages). Other protocols are not supported.</div>
+        <div class="field">
+          <label for="provider-url" data-i18n="dialog.apiUrl">API URL</label>
+          <input id="provider-url" name="upstream_url" type="url" maxlength="500" placeholder="https://api.example.com/v1" autocomplete="off" required />
+          <div class="field-help" data-i18n="dialog.apiUrlHelp">Leave blank to use the global default endpoint.</div>
+        </div>
+        <div class="field-grid">
+          <div class="field">
+            <label for="provider-model" data-i18n="dialog.model">Default Model</label>
+            <input id="provider-model" name="forced_model" maxlength="100" autocomplete="off" required />
+          </div>
+          <div class="field">
+            <label for="provider-protocol" data-i18n="dialog.protocol">Protocol</label>
+            <select id="provider-protocol" name="protocol">
+              <option value="auto" data-i18n="dialog.protocolAuto">Auto</option>
+              <option value="openai_responses">OpenAI Responses</option>
+              <option value="openai_chat_completions">OpenAI Chat Completions</option>
+              <option value="anthropic_messages">Anthropic Messages</option>
+            </select>
+          </div>
+        </div>
         <div class="field">
           <label for="provider-key" data-i18n="dialog.apiKey">API Key</label>
           <input id="provider-key" name="key" type="password" autocomplete="new-password" />
@@ -323,7 +345,7 @@
         document.querySelector("#providers").innerHTML = data.providers.map((p, index) => `
           <div class="provider ${p.enabled ? "" : "disabled"} ${p.is_current ? "current" : ""}">
             <div class="priority">P${p.priority}</div>
-            <div><div class="name">${esc(p.name)}${p.is_current ? `<span class="current-badge">${t("queue.inUse")}</span>` : ""}</div><div class="subtle">${t("queue.successFailure", {success:p.success_count, failure:p.failure_count})}<span class="key-hint">${esc(p.key_hint || "-")}</span></div><div class="subtle context-observation">${contextSummary(p)}</div></div>
+            <div><div class="name">${esc(p.name)}${p.is_current ? `<span class="current-badge">${t("queue.inUse")}</span>` : ""}</div><div class="subtle">${t("queue.successFailure", {success:p.success_count, failure:p.failure_count})}<span class="key-hint">${esc(p.key_hint || "-")}</span></div><div class="subtle route-info">${esc(p.forced_model || "-")} · ${esc(protocolLabel(p.protocol))} · ${p.has_custom_upstream ? t("queue.routeCustom") : t("queue.routeDefault")}</div><div class="subtle context-observation">${contextSummary(p)}</div></div>
             <div class="state-cell"><span class="status ${p.health}"><span class="dot"></span>${t(`health.${p.health}`)}${p.cooldown_remaining ? ` ${clock(p.cooldown_remaining)}` : ""}</span></div>
             <div class="error">${esc(p.last_error || t("queue.noError"))}</div>
             <div class="latency">${p.last_latency_ms == null ? "-" : `${p.last_latency_ms} ${t("unit.milliseconds")}`}</div>
@@ -349,6 +371,9 @@
         }
         const key = update.state === "current" ? "update.current" : update.state === "unavailable" ? "update.unavailable" : "update.checking";
         target.textContent = key === "update.current" ? t(key, {version: update.current_version || version}) : t(key);
+      }
+      function protocolLabel(protocol) {
+        return protocol === "anthropic_messages" ? "Anthropic Messages" : protocol === "openai_chat_completions" ? t("dialog.protocolChat") : protocol === "openai_responses" ? t("dialog.protocolResponses") : t("dialog.protocolAuto");
       }
       function renderEvents() {
         const total = latestEvents.length;
@@ -386,6 +411,11 @@
         document.querySelector("#provider-dialog-title").textContent = editing ? t("dialog.editTitle") : t("dialog.addTitle");
         document.querySelector("#provider-old-name").value = name;
         document.querySelector("#provider-name").value = name;
+        document.querySelector("#provider-url").value = "";
+        document.querySelector("#provider-model").value = provider?.forced_model || "";
+        document.querySelector("#provider-protocol").value = provider?.protocol || "auto";
+        document.querySelector("#provider-url").required = !editing;
+        document.querySelector("#provider-model").required = !editing;
         document.querySelector("#provider-key").value = "";
         document.querySelector("#provider-key").required = !editing;
         document.querySelector("#provider-key").placeholder = editing ? (provider?.key_hint || "") : "";
@@ -424,7 +454,7 @@
       form.addEventListener("submit", async event => {
         event.preventDefault();
         const oldName = document.querySelector("#provider-old-name").value;
-        const payload = {old_name: oldName, name: document.querySelector("#provider-name").value.trim(), key: document.querySelector("#provider-key").value.trim()};
+        const payload = {old_name: oldName, name: document.querySelector("#provider-name").value.trim(), key: document.querySelector("#provider-key").value.trim(), upstream_url: document.querySelector("#provider-url").value.trim() || null, forced_model: document.querySelector("#provider-model").value.trim() || null, protocol: document.querySelector("#provider-protocol").value};
         try {
           const data = await call("/api/providers", {method: oldName ? "PUT" : "POST", body: JSON.stringify(payload)});
           closeProviderDialog(); render(data); toast(oldName ? t("toast.providerUpdated") : t("toast.providerAdded"));

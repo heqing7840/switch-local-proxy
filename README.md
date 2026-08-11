@@ -35,26 +35,18 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-Create the ignored local `key.txt` file. It must never be committed:
-
-```text
-upstream_url:<your-upstream-api-base>/v1
-forced_model:<your-model-name>
-provider-one:<your-api-key>
-provider-two:<your-api-key>
-```
+The first launch creates a local SQLite database under the ignored `runtime/` directory. Configure channels from the dashboard; credentials remain in that database and are never committed.
 
 Then run:
 
 ```bash
-chmod 600 key.txt
 ./run.sh verify
 ./run.sh install
 ./run.sh doctor
 ./run.sh open
 ```
 
-The dashboard opens on the local machine. Client applications should point their OpenAI-compatible base URL to the local `/v1` endpoint. They do not need the upstream provider keys; the proxy reads those only from the local ignored `key.txt`.
+The dashboard opens on the local machine. Client applications should point their OpenAI-compatible base URL to the local `/v1` endpoint. They do not need upstream provider credentials; the proxy reads them only from the local SQLite database.
 
 ## Updates
 
@@ -92,32 +84,17 @@ Supported Anthropic paths:
 
 The adapter preserves Anthropic headers such as `anthropic-version` and `anthropic-beta`, replaces the model with `forced_model`, and supports Anthropic streaming SSE events.
 
-## Import Existing Keys
-
-To import provider lines from another local file:
-
-```bash
-./run.sh import-keys /absolute/path/to/source/key.txt
-```
-
-The importer copies provider key lines and the optional `upstream_url` and `forced_model` settings without printing key values.
-
 ## Configuration
 
-Each non-setting line in `key.txt` uses this format:
-
-```text
-provider-name:provider-api-key
-```
-
-The optional settings are:
+Each channel is configured in the dashboard and stored in SQLite. The optional per-channel settings are:
 
 | Setting | Meaning |
 | --- | --- |
-| `upstream_url` | Base URL for the selected adapter, including `/v1` when required |
+| `upstream_url` | Channel-specific API prefix; blank inherits the global default |
 | `forced_model` | Model sent to the upstream service |
+| `protocol` | `auto`, `openai_responses`, `openai_chat_completions`, or `anthropic_messages` |
 
-The dashboard persists non-secret routing state in the ignored `runtime/` directory. Key values and private upstream addresses stay in `key.txt` and are never returned by the status API.
+The dashboard persists credentials, routing state, runtime health, and request metadata in the ignored `runtime/proxy.sqlite3` database. Full credentials and private API addresses are never returned by the status API.
 
 ## Failover Policy
 

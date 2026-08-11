@@ -4,7 +4,7 @@
 
 - 问题：Codex 依赖 CC Switch 的 `127.0.0.1:15721`；退出 CC Switch 会中断请求。
 - 证据：早期上游 Responses 直连曾出现 HTTP 503，桌面切换工具的熔断并非纯界面误判。
-- 决策：设计独立、本机常驻、仅服务 Codex Responses 的故障转移代理；key 保持在既有 `key.txt`，不记录或展示。
+- 决策：设计独立、本机常驻、仅服务 Codex Responses 的故障转移代理；认证信息只保存在本机，不记录或展示。
 - 经验：HTTP 200 的 SSE 流仍可能承载 `response.failed`，必须在提交下游前检查初始事件。
 
 ## 2026-08-10 - 本地域名与进程策略
@@ -28,10 +28,9 @@
 
 ## 2026-08-10 - 动态 Provider 管理
 
-- 问题：原实现把五个 Provider 写死，且从另一个项目的混合 `key.txt` 读取，无法在管理页安全增删改。
+- 问题：原实现把五个 Provider 写死，且认证信息分散，无法在管理页安全增删改。
 - 尝试：直接改原混合文件会影响无关凭据，因此未采用。
-- 最终方案：只迁移五条 `codex-app-*` 到本项目已忽略的 `key.txt`；增加本机 API 与弹窗完成添加、改名、换 key 和删除。
-- 安全约束：key 文件权限固定为 `600`；编辑不回显旧 key，空值表示保持；状态、事件、日志和 `dist` 均不含 key。
+- 最终方案：增加本机 API 与弹窗完成添加、改名、换密钥和删除；状态、事件、日志和 `dist` 均不含完整密钥。
 - 经验：删除后的动态列表必须以持久化配置和当前 key 文件为准，不能在重启时重新注入历史硬编码默认项。
 
 ## 2026-08-10 - 启动与安装韧性
@@ -90,7 +89,7 @@
 - 官方依据：Claude Code 通过 `ANTHROPIC_BASE_URL` 和网关凭据连接 LLM Gateway；Messages API 使用 `/v1/messages`、`x-api-key` 和 `anthropic-version`。
 - 最终方案：新增 `anthropic_messages` 适配器，支持 Messages 与 Count Tokens；移除客户端占位认证并注入 Provider Key，保留 Anthropic 协议头，复用现有重试、冷却、SSE 预检和事件记录。
 - 兼容边界：这是 Anthropic 协议透传，不是 Anthropic 与 OpenAI 的请求/响应转换。上游不支持 Messages 时，代理不能凭空让 Claude Code 工作。
-- 安全：Claude Code 可使用 `ANTHROPIC_AUTH_TOKEN=local-proxy` 作为非敏感本地占位值，真实 Provider Key 仍只存在于被忽略且权限为 `600` 的 `key.txt`。
+- 安全：Claude Code 可使用 `ANTHROPIC_AUTH_TOKEN=local-proxy` 作为非敏感本地占位值，真实 Provider 密钥仍只存在于被忽略的本机数据库。
 
 ## 2026-08-10 - 公共发布隐私与本机接口加固
 
@@ -129,7 +128,7 @@
 ## 2026-08-11 - CC Switch 本地后备无需 API Key
 
 - 问题：若 CC Switch 的本地 Proxy Provider 要求填写 API Key，用户容易误把真实上游密钥填入客户端配置，或因为空值导致切换失败。
-- 证据：代理端不校验客户端 `Authorization`，现有无认证请求测试仍能进入路由；真实 Provider Key 始终由代理从本机 `key.txt` 注入。
+- 证据：代理端不校验客户端 `Authorization`，现有无认证请求测试仍能进入路由；真实 Provider 密钥始终由代理从本机数据库注入。
 - 最终结果：CC Switch 的 Switch Local Proxy 条目使用 `requires_openai_auth = false` 与空认证对象；UI 中 API Key 可保持空白。该条目仅用于手动切换，不加入 CC Switch 自动故障转移队列。
 
 ## 2026-08-11 - 本地版本更新提示
@@ -138,3 +137,9 @@
 - 最终方案：公开仓库根目录维护 `version.json`；管理页打开时调用本机 `/api/update`，后台低频读取该公开文件。成功缓存 24 小时，网络失败仅缓存 15 分钟。
 - 隐私与可用性：请求没有认证、Cookie、渠道、Key、私有上游地址、使用记录或设备标识；检查故障只显示暂不可用，不进入故障转移链，也不影响代理请求。
 - 升级路径：用户查看公开提交记录后运行 `git pull --ff-only && ./run.sh repair`；既有安装健康检查与回滚机制继续生效。
+
+## 2026-08-11 - SQLite 与独立上游渠道
+
+- 需求：同一故障转移队列可混用不同中继商或官方渠道，同时不把任何用户的地址、密钥、状态或请求记录发布到 GitHub。
+- 最终方案：渠道在 SQLite 中保存独立 API 前缀、模型和协议；路由按渠道重写基址并保留本地 `/v1` 后的协议路径。
+- 存储边界：密钥、渠道配置、运行状态和请求历史统一写入项目忽略的 `runtime/proxy.sqlite3`；公开源码只包含通用 UI、迁移逻辑和安全扫描规则。
