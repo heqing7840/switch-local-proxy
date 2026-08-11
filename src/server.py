@@ -13,7 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import chain
 from pathlib import Path
 from typing import Iterable
-from urllib.parse import quote, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 from urllib.request import Request, urlopen
 
 import httpx
@@ -230,6 +230,13 @@ class Handler(BaseHTTPRequestHandler):
             status = STORE.status()
             status["local_addresses"] = local_ipv4_addresses()
             self._send_json(200, status)
+            return
+        if parsed.path == "/api/provider":
+            name = str(parse_qs(parsed.query).get("name", [""])[0])
+            try:
+                self._send_json(200, STORE.provider_detail(name))
+            except (KeyError, ValueError):
+                self._send_json(404, {"error": {"message": "渠道不存在"}})
             return
         if parsed.path == "/api/update":
             self._send_json(200, UPDATE_CHECKER.status())

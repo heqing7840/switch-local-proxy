@@ -88,6 +88,8 @@ The adapter preserves Anthropic headers such as `anthropic-version` and `anthrop
 
 Each channel is configured in the dashboard and stored in SQLite. Adding a channel requires only a name, API URL, and API key. Protocol matching defaults to automatic, and the model comes from the client request.
 
+Editing a channel reloads its saved API URL through a loopback-only management endpoint. The browser never receives the full API key.
+
 | Setting | Meaning |
 | --- | --- |
 | `upstream_url` | Channel-specific API prefix |

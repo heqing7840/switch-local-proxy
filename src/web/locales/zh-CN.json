@@ -64,7 +64,7 @@
   "dialog.apiKey": "API Key",
   "dialog.protocolSupport": "支持 GPT/Codex、Grok（OpenAI Responses）、通过 OpenAI 兼容 Chat Completions 接口接入 Gemini，以及 Claude（Anthropic Messages）；不支持其它协议。",
   "dialog.apiUrl": "API 地址",
-  "dialog.apiUrlHelp": "添加时需要填写；编辑时留空表示不修改当前地址。不要在地址中填写账号密码。",
+  "dialog.apiUrlHelp": "渠道地址会在本机管理页面中回显。不要在地址中填写账号密码。",
   "dialog.protocol": "协议",
   "dialog.protocolAuto": "自动匹配请求",
   "dialog.protocolResponses": "OpenAI Responses",

@@ -47,7 +47,7 @@
   "dialog.apiKey": "API Key",
   "dialog.protocolSupport": "Supports GPT/Codex and Grok (OpenAI Responses), Gemini through an OpenAI-compatible Chat Completions endpoint, and Claude (Anthropic Messages). Other protocols are not supported.",
   "dialog.apiUrl": "API URL",
-  "dialog.apiUrlHelp": "Required when adding. Leave blank while editing to keep the current URL. Do not put credentials in the URL.",
+  "dialog.apiUrlHelp": "The channel URL is shown only in the local management page. Do not put credentials in the URL.",
   "dialog.protocol": "Protocol",
   "dialog.protocolAuto": "Match Request Automatically",
   "dialog.protocolResponses": "OpenAI Responses",

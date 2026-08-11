@@ -800,6 +800,40 @@ class ProxyCoreTests(unittest.TestCase):
                 thread.join(timeout=2)
                 server.STORE = previous_store
 
+    def test_provider_detail_api_returns_url_but_never_key(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text("existing:sk-existing-api\n", encoding="utf-8")
+            store = ProxyStore(root / "state", key_file)
+            store.update_provider(
+                "existing",
+                "existing",
+                upstream_url="https://relay.example/v1",
+            )
+            previous_store = server.STORE
+            server.STORE = store
+            httpd = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            thread = threading.Thread(target=httpd.serve_forever, daemon=True)
+            thread.start()
+            connection = http.client.HTTPConnection(
+                "127.0.0.1", httpd.server_port, timeout=2
+            )
+            try:
+                connection.request("GET", "/api/provider?name=existing")
+                response = connection.getresponse()
+                data = json.loads(response.read())
+                self.assertEqual(response.status, 200)
+                self.assertEqual(data["upstream_url"], "https://relay.example/v1")
+                self.assertTrue(data["has_key"])
+                self.assertNotIn("sk-existing-api", json.dumps(data))
+            finally:
+                connection.close()
+                httpd.shutdown()
+                httpd.server_close()
+                thread.join(timeout=2)
+                server.STORE = previous_store
+
     def test_cross_origin_mutation_is_rejected_before_provider_change(self):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)

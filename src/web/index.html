@@ -481,19 +481,27 @@
       const accessDialog = document.querySelector("#access-dialog");
       const form = document.querySelector("#provider-form");
       const accessForm = document.querySelector("#access-form");
-      function openProviderDialog(name = "") {
+      async function openProviderDialog(name = "") {
         const editing = Boolean(name);
-        const provider = latestProviders.find(item => item.name === name);
+        let provider = latestProviders.find(item => item.name === name);
+        if (editing) {
+          try {
+            provider = {...provider, ...await call(`/api/provider?name=${encodeURIComponent(name)}`)};
+          } catch (error) {
+            toast(error.message);
+            return;
+          }
+        }
         document.querySelector("#provider-dialog-title").textContent = editing ? t("dialog.editTitle") : t("dialog.addTitle");
         document.querySelector("#provider-old-name").value = name;
         document.querySelector("#provider-name").value = name;
-        document.querySelector("#provider-url").value = "";
+        document.querySelector("#provider-url").value = provider?.upstream_url || "";
         document.querySelector("#provider-protocol").value = provider?.protocol || "auto";
         document.querySelector("#provider-access").value = provider?.access_policy || "inherit";
         document.querySelector("#provider-networks").value = String(provider?.allowed_networks || "").replace(/,\s*/g, "\n");
         document.querySelector("#provider-model-policy").value = provider?.model_policy || "inherit";
         document.querySelector("#allowed-networks-field").hidden = (provider?.access_policy || "inherit") !== "cidr";
-        document.querySelector("#provider-url").required = !editing;
+        document.querySelector("#provider-url").required = true;
         document.querySelector("#provider-key").value = "";
         document.querySelector("#provider-key").required = !editing;
         document.querySelector("#provider-key").placeholder = editing ? (provider?.key_hint || "") : "";

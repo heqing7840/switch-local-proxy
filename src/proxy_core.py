@@ -758,6 +758,32 @@ class ProxyStore:
             self._save_settings()
             self._save_runtime()
 
+    def provider_detail(self, name: str) -> dict[str, Any]:
+        """Return private channel configuration only to the local management API.
+
+        API keys are deliberately excluded. The caller can use ``has_key`` and
+        ``key_hint`` without receiving the credential itself.
+        """
+        name = validate_provider_name(name)
+        with self.lock:
+            provider = next(
+                (item for item in self.settings["providers"] if item["name"] == name),
+                None,
+            )
+            if provider is None:
+                raise KeyError(name)
+            key = self.load_keys().get(name, "")
+            return {
+                "name": provider["name"],
+                "upstream_url": str(provider.get("upstream_url") or ""),
+                "protocol": provider.get("protocol", PROVIDER_PROTOCOL_AUTO),
+                "access_policy": provider.get("access_policy", ACCESS_INHERIT),
+                "allowed_networks": provider.get("allowed_networks", ""),
+                "model_policy": provider.get("model_policy", MODEL_POLICY_INHERIT),
+                "has_key": bool(key),
+                "key_hint": mask_provider_key(key),
+            }
+
     def eligible_providers(
         self, adapter: str | None = None, client_ip: str | None = None
     ) -> list[dict[str, Any]]:
