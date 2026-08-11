@@ -131,3 +131,10 @@
 - 问题：若 CC Switch 的本地 Proxy Provider 要求填写 API Key，用户容易误把真实上游密钥填入客户端配置，或因为空值导致切换失败。
 - 证据：代理端不校验客户端 `Authorization`，现有无认证请求测试仍能进入路由；真实 Provider Key 始终由代理从本机 `key.txt` 注入。
 - 最终结果：CC Switch 的 Switch Local Proxy 条目使用 `requires_openai_auth = false` 与空认证对象；UI 中 API Key 可保持空白。该条目仅用于手动切换，不加入 CC Switch 自动故障转移队列。
+
+## 2026-08-11 - 本地版本更新提示
+
+- 问题：用户从 GitHub 安装后无法知道本机版本是否落后，手动反复查看仓库既麻烦也容易遗漏更新。
+- 最终方案：公开仓库根目录维护 `version.json`；管理页打开时调用本机 `/api/update`，后台低频读取该公开文件。成功缓存 24 小时，网络失败仅缓存 15 分钟。
+- 隐私与可用性：请求没有认证、Cookie、渠道、Key、私有上游地址、使用记录或设备标识；检查故障只显示暂不可用，不进入故障转移链，也不影响代理请求。
+- 升级路径：用户查看公开提交记录后运行 `git pull --ff-only && ./run.sh repair`；既有安装健康检查与回滚机制继续生效。

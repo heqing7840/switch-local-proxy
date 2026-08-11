@@ -5,12 +5,14 @@ import logging
 import os
 import re
 import socket
+import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from itertools import chain
 from pathlib import Path
 from typing import Iterable
 from urllib.parse import quote, urlparse
+from urllib.request import Request, urlopen
 
 import httpx
 
@@ -18,6 +20,7 @@ from proxy_core import (
     ANTHROPIC_MESSAGES_ADAPTER,
     ProxyStore,
     adapter_for_path,
+    atomic_write_json,
     estimate_input_tokens,
     inspect_responses_payload,
     inspect_sse_prime,
@@ -30,6 +33,7 @@ from proxy_core import (
 APP_DIR = Path(__file__).resolve().parent
 WEB_FILE = APP_DIR / "web" / "index.html"
 LOCALE_DIR = APP_DIR / "web" / "locales"
+VERSION_FILE = APP_DIR.parent / "version.json"
 STATE_DIR = Path(
     os.environ.get(
         "SWITCH_LOCAL_PROXY_STATE_DIR",
@@ -42,6 +46,85 @@ KEY_FILE = Path(
         os.environ.get("CODEX_KEY_PROXY_KEY_FILE", str(APP_DIR.parent / "key.txt")),
     )
 )
+
+UPDATE_CHECK_INTERVAL_SECONDS = 24 * 60 * 60
+UPDATE_FAILURE_RETRY_SECONDS = 15 * 60
+UPDATE_FETCH_TIMEOUT_SECONDS = 2
+
+
+def _version_parts(value: str) -> tuple[int, ...]:
+    try:
+        return tuple(int(part) for part in value.strip().lstrip("v").split("."))
+    except ValueError:
+        return ()
+
+
+class UpdateChecker:
+    """Fetches only the public project version manifest and caches the result."""
+
+    def __init__(self, manifest_path: Path, state_dir: Path):
+        self.manifest_path = manifest_path
+        self.cache_path = state_dir / "update.json"
+        self.lock = threading.RLock()
+        self.checking = False
+        self.manifest = self._read_json(manifest_path)
+        self.cache = self._read_json(self.cache_path)
+
+    @staticmethod
+    def _read_json(path: Path) -> dict[str, object]:
+        try:
+            value = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return {}
+        return value if isinstance(value, dict) else {}
+
+    def status(self) -> dict[str, object]:
+        with self.lock:
+            now = time.time()
+            checked_at = float(self.cache.get("checked_at") or 0)
+            interval = (
+                UPDATE_CHECK_INTERVAL_SECONDS
+                if self.cache.get("state") == "ok"
+                else UPDATE_FAILURE_RETRY_SECONDS
+            )
+            if not self.checking and now - checked_at >= interval:
+                self.checking = True
+                threading.Thread(target=self._refresh, daemon=True).start()
+            return self._public_status()
+
+    def _public_status(self) -> dict[str, object]:
+        current = str(self.manifest.get("version") or "0.0.0")
+        latest = str(self.cache.get("latest_version") or "")
+        state = str(self.cache.get("state") or "checking")
+        if self.checking:
+            state = "checking"
+        if state == "ok":
+            state = "available" if _version_parts(latest) > _version_parts(current) else "current"
+        return {
+            "state": state,
+            "current_version": current,
+            "latest_version": latest or current,
+            "release_url": str(self.manifest.get("release_url") or ""),
+            "checked_at": self.cache.get("checked_at"),
+        }
+
+    def _refresh(self) -> None:
+        now = time.time()
+        try:
+            update_url = "https://github.com/heqing7840/switch-local-proxy/raw/refs/heads/main/version.json"
+            request = Request(update_url, headers={"User-Agent": "Switch-Local-Proxy-Update-Check"})
+            with urlopen(request, timeout=UPDATE_FETCH_TIMEOUT_SECONDS) as response:
+                remote = json.loads(response.read().decode("utf-8"))
+            latest = str(remote.get("version") or "") if isinstance(remote, dict) else ""
+            if not _version_parts(latest):
+                raise ValueError("invalid version manifest")
+            cache = {"state": "ok", "latest_version": latest, "checked_at": now}
+        except (OSError, ValueError, json.JSONDecodeError):
+            cache = {"state": "unavailable", "checked_at": now}
+        with self.lock:
+            self.cache = cache
+            self.checking = False
+            atomic_write_json(self.cache_path, cache)
 HOST = os.environ.get(
     "SWITCH_LOCAL_PROXY_HOST", os.environ.get("CODEX_KEY_PROXY_HOST", "127.0.0.1")
 )
@@ -56,6 +139,7 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(message)s",
 )
 STORE = ProxyStore(STATE_DIR, KEY_FILE)
+UPDATE_CHECKER = UpdateChecker(VERSION_FILE, STATE_DIR)
 CLIENT = httpx.Client(
     timeout=httpx.Timeout(connect=10, read=95, write=30, pool=10),
     limits=httpx.Limits(max_connections=30, max_keepalive_connections=10),
@@ -100,7 +184,7 @@ def header_latin1(value: str) -> str:
 
 class Handler(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
-    server_version = "SwitchLocalProxy/0.4"
+    server_version = "SwitchLocalProxy/0.5"
 
     def setup(self) -> None:
         super().setup()
@@ -125,6 +209,9 @@ class Handler(BaseHTTPRequestHandler):
             return
         if parsed.path in {"/api/status", "/api/health"}:
             self._send_json(200, STORE.status())
+            return
+        if parsed.path == "/api/update":
+            self._send_json(200, UPDATE_CHECKER.status())
             return
         self._send_json(404, {"error": {"message": "Not found"}})
 

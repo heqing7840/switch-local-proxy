@@ -56,6 +56,17 @@ chmod 600 key.txt
 
 管理页会在本机打开。客户端只需要连接本地 `/v1` 接口，不需要知道上游 Key；代理只从本机被忽略的 `key.txt` 读取它们。
 
+## 更新检查
+
+管理页打开后会在后台检查项目公开的版本文件。成功结果缓存 24 小时；临时网络失败后 15 分钟再次尝试。检查只请求公开的 `version.json`，不会上传 API Key、渠道名称、请求记录、私有上游地址或设备标识；检查失败也绝不会影响代理转发。
+
+发现新版本时，页头会链接到公开提交记录。升级命令：
+
+```bash
+git pull --ff-only
+./run.sh repair
+```
+
 ## CC Switch 后备条目
 
 为了在本地服务离线时仍能快速切回直连线路，可在 CC Switch 中把 Switch Local Proxy 添加为独立 Codex Provider。API 请求地址填写 `http://127.0.0.1:15722/v1/`，上游格式选择 `Responses`，模型使用已配置的强制模型。API Key 保持空白，并确保生成的 Codex Provider 配置为 `requires_openai_auth = false`：本地代理不需要客户端密钥，会在本机注入真实上游 Key。不要把该条目加入 CC Switch 自动故障转移队列，避免两层故障转移叠加；将它作为手动切换目标使用。

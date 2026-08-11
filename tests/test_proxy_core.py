@@ -27,10 +27,50 @@ from proxy_core import (  # noqa: E402
     should_retry_same_provider,
 )
 import server  # noqa: E402
-from server import MAX_REQUEST_BODY_BYTES, Handler, compact_error, header_latin1  # noqa: E402
+from server import (  # noqa: E402
+    MAX_REQUEST_BODY_BYTES,
+    Handler,
+    UpdateChecker,
+    compact_error,
+    header_latin1,
+)
 
 
 class ProxyCoreTests(unittest.TestCase):
+    def test_update_status_contains_only_public_version_metadata(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            manifest = root / "version.json"
+            manifest.write_text(
+                json.dumps(
+                    {
+                        "version": "0.5.1",
+                        "release_url": "https://github.com/example/project/commits/main",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            checker = UpdateChecker(manifest, root / "state")
+            checker.cache = {
+                "state": "ok",
+                "latest_version": "0.5.2",
+                "checked_at": 123.0,
+            }
+
+            status = checker._public_status()
+
+            self.assertEqual(status["state"], "available")
+            self.assertEqual(status["current_version"], "0.5.1")
+            self.assertEqual(status["latest_version"], "0.5.2")
+            self.assertEqual(
+                status["release_url"],
+                "https://github.com/example/project/commits/main",
+            )
+            self.assertEqual(
+                set(status),
+                {"state", "current_version", "latest_version", "release_url", "checked_at"},
+            )
+
     def test_supported_adapter_paths_are_explicit(self):
         self.assertEqual(adapter_for_path("/v1/responses"), OPENAI_RESPONSES_ADAPTER)
         self.assertEqual(

@@ -28,7 +28,11 @@
         border-bottom: 1px solid #dfe2e6;
       }
       h1 { margin: 0; font-size: 19px; font-weight: 700; letter-spacing: 0; }
+      .header-meta { display: flex; align-items: center; gap: 12px; min-width: 0; }
       .endpoint { color: #676d78; font-size: 13px; }
+      .update { color: #68717c; font-size: 12px; white-space: nowrap; }
+      .update.available { color: #a45d00; font-weight: 650; }
+      .update a { color: inherit; text-decoration: underline; text-underline-offset: 2px; }
       #locale-select { height: 32px; border: 1px solid #ccd1d8; border-radius: 6px; padding: 0 8px; background: #fff; color: #292d34; }
       main { max-width: 1160px; margin: 0 auto; padding: 24px 28px 48px; }
       .summary {
@@ -129,6 +133,7 @@
       @media (max-width: 600px) {
         header { padding: 0 16px; }
         .endpoint { display: none; }
+        .update { max-width: 145px; overflow: hidden; text-overflow: ellipsis; }
         main { padding: 16px; }
         .summary { grid-template-columns: 1fr; }
         .metric { border-right: 0; border-bottom: 1px solid #e5e7eb; }
@@ -149,12 +154,15 @@
     <div class="shell">
       <header>
         <h1>Switch Local Proxy</h1>
-        <div class="endpoint" id="endpoint">127.0.0.1:15722</div>
-        <select id="locale-select" aria-label="Language">
-          <option value="system">Follow System</option>
-          <option value="en">English</option>
-          <option value="zh-CN">简体中文</option>
-        </select>
+        <div class="header-meta">
+          <div class="endpoint" id="endpoint">127.0.0.1:15722</div>
+          <div class="update" id="update-status" aria-live="polite"></div>
+          <select id="locale-select" aria-label="Language">
+            <option value="system">Follow System</option>
+            <option value="en">English</option>
+            <option value="zh-CN">简体中文</option>
+          </select>
+        </div>
       </header>
       <main>
         <section class="summary" id="summary" aria-label="Service overview">
@@ -330,6 +338,18 @@
         latestEvents = data.events;
         renderEvents();
       }
+      function renderUpdate(update) {
+        const target = document.querySelector("#update-status");
+        if (!update) { target.textContent = ""; return; }
+        const version = update.latest_version || update.current_version || "-";
+        target.className = `update ${update.state || ""}`;
+        if (update.state === "available" && update.release_url) {
+          target.innerHTML = `<a href="${esc(update.release_url)}" target="_blank" rel="noopener noreferrer">${esc(t("update.available", {version}))} · ${esc(t("update.open"))}</a>`;
+          return;
+        }
+        const key = update.state === "current" ? "update.current" : update.state === "unavailable" ? "update.unavailable" : "update.checking";
+        target.textContent = key === "update.current" ? t(key, {version: update.current_version || version}) : t(key);
+      }
       function renderEvents() {
         const total = latestEvents.length;
         const pages = Math.max(1, Math.ceil(total / eventPageSize));
@@ -351,7 +371,11 @@
         document.querySelector("#event-next").disabled = eventPage >= pages;
       }
       async function refresh() {
-        try { render(await call("/api/status")); }
+        try {
+          const [status, update] = await Promise.all([call("/api/status"), call("/api/update")]);
+          render(status);
+          renderUpdate(update);
+        }
         catch (error) { document.querySelector("#service").textContent = t("status.connectionFailed"); }
       }
       const dialog = document.querySelector("#provider-dialog");
