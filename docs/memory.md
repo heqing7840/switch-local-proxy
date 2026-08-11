@@ -125,3 +125,9 @@
 - 问题：本机图形登录域的 `launchctl bootstrap` 返回 `Input/output error`，导致安装脚本在构建成功后报安装失败，服务未被加载。
 - 验证：相同 plist 通过 `launchctl load -w` 成功加载，服务监听本机端口且 `doctor` 健康检查通过；因此不是 Python 进程、端口或渠道配置失败。
 - 最终结果：`run.sh install`、`repair` 和 `start` 共用加载函数。优先 `bootstrap`，若服务未加载再回退 `load -w`，随后必须通过原有健康检查才报告成功。
+
+## 2026-08-11 - CC Switch 本地后备无需 API Key
+
+- 问题：若 CC Switch 的本地 Proxy Provider 要求填写 API Key，用户容易误把真实上游密钥填入客户端配置，或因为空值导致切换失败。
+- 证据：代理端不校验客户端 `Authorization`，现有无认证请求测试仍能进入路由；真实 Provider Key 始终由代理从本机 `key.txt` 注入。
+- 最终结果：CC Switch 的 Switch Local Proxy 条目使用 `requires_openai_auth = false` 与空认证对象；UI 中 API Key 可保持空白。该条目仅用于手动切换，不加入 CC Switch 自动故障转移队列。

@@ -56,6 +56,10 @@ chmod 600 key.txt
 
 The dashboard opens on the local machine. Client applications should point their OpenAI-compatible base URL to the local `/v1` endpoint. They do not need the upstream provider keys; the proxy reads those only from the local ignored `key.txt`.
 
+## CC Switch Fallback Entry
+
+To keep a direct relay available when the local service is offline, add Switch Local Proxy as a separate Codex provider in CC Switch. Use `http://127.0.0.1:15722/v1/` as the API request URL, select `Responses`, and use the configured forced model. Leave the API Key blank and ensure the generated Codex provider has `requires_openai_auth = false`: the local proxy does not require a client key and injects the real upstream key locally. Keep this entry out of CC Switch automatic failover to avoid two independent failover layers; use it as a manual switch target.
+
 ## Claude Code
 
 Claude Code can use the local Anthropic Messages adapter without receiving an upstream provider key:
