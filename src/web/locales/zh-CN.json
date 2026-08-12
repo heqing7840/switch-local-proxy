@@ -47,6 +47,8 @@
   "history.message": "信息",
   "history.success": "成功",
   "history.failure": "失败",
+  "history.transient": "繁忙",
+  "history.request": "请求问题",
   "history.empty": "暂无请求记录",
   "history.requestSucceeded": "请求成功",
   "history.openaiChat": "OpenAI Chat Completions",

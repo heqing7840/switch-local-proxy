@@ -108,6 +108,8 @@
       .event-head { color: #747b86; min-height: 40px; font-size: 12px; font-weight: 650; }
       .result { font-weight: 700; color: #168f61; }
       .result.failure { color: #c53d36; }
+      .result.transient { color: #b66b00; }
+      .result.request { color: #626973; }
       .empty { padding: 28px 16px; color: #7b828c; text-align: center; }
       .pagination { min-height: 52px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 9px 16px; border-top: 1px solid #e5e7eb; background: #fafbfc; }
       .page-size, .page-nav { display: flex; align-items: center; gap: 8px; color: #626973; font-size: 13px; }
@@ -457,7 +459,7 @@
             <div>${eventTime(item.at)}</div>
             <div>${esc(item.provider)}</div>
             <div><div>${esc(item.requested_model && item.model && item.requested_model !== item.model ? `${item.requested_model} → ${item.model}` : (item.model || item.requested_model || "-"))}</div><div class="subtle">${item.adapter === "anthropic_messages" ? "Anthropic Messages" : item.adapter === "openai_chat_completions" ? t("history.openaiChat") : "OpenAI Responses"} · ${t("history.inputEstimate", {value:item.input_estimator_version === 2 ? formatTokens(item.input_tokens_estimate) : "-"})}${item.retry_count ? ` · ${t("history.retryCount", {value:item.retry_count})}` : ""}</div></div>
-            <div class="result ${item.result}">${item.result === "success" ? t("history.success") : t("history.failure")}</div>
+            <div class="result ${item.result}">${item.result === "success" ? t("history.success") : item.result === "transient" ? t("history.transient") : item.result === "request" ? t("history.request") : t("history.failure")}</div>
             <div>${item.latency_ms == null ? "-" : `${item.latency_ms} ${t("unit.milliseconds")}`}</div>
             <div class="error">${esc(item.message === "请求成功" ? t("history.requestSucceeded") : item.message)}</div>
           </div>`).join("") : `<div class="empty">${t("history.empty")}</div>`;

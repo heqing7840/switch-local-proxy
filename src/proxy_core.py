@@ -28,7 +28,11 @@ PROVIDER_NAME_RE = re.compile(r"^[^:\r\n\x00-\x1f\x7f]{1,80}$")
 PROVIDER_KEY_RE = re.compile(r"^sk-[^\s]{8,500}$")
 MAX_PROVIDERS = 30
 SAME_PROVIDER_502_RETRIES = 1
+SAME_PROVIDER_OVERLOAD_RETRIES = 2
 CONTEXT_ESTIMATOR_VERSION = 2
+TRANSIENT_FAILURE_WINDOW_SECONDS = 60
+TRANSIENT_COOLDOWN_SECONDS = 10
+TRANSIENT_COOLDOWN_THRESHOLD = 2
 PRIVATE_SETTING_NAMES = {"upstream_url", "forced_model"}
 OPENAI_RESPONSES_ADAPTER = "openai_responses"
 OPENAI_CHAT_COMPLETIONS_ADAPTER = "openai_chat_completions"
@@ -220,8 +224,53 @@ def estimate_input_tokens(payload: bytes) -> int:
     return max(1, round(non_ascii + ascii_count / 4))
 
 
-def should_retry_same_provider(status_code: int, retry_count: int) -> bool:
+def should_retry_same_provider(
+    status_code: int, retry_count: int, message: str = ""
+) -> bool:
     return status_code == 502 and retry_count < SAME_PROVIDER_502_RETRIES
+
+
+def is_transient_overload(message: str) -> bool:
+    lowered = message.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "our servers are currently overloaded",
+            "server is currently overloaded",
+            "servers are overloaded",
+            "overloaded_error",
+            "at capacity",
+            "rate limit exceeded",
+            "too many requests",
+            "concurrency limit exceeded",
+            "unauthorized client detected",
+        )
+    )
+
+
+def is_definitive_credential_error(message: str) -> bool:
+    lowered = message.lower()
+    return any(
+        marker in lowered
+        for marker in (
+            "invalid_api_key",
+            "invalid api key",
+            "incorrect api key",
+            "api key has been revoked",
+            "api key has expired",
+            "insufficient_quota",
+            "quota exhausted",
+            "billing hard limit",
+        )
+    )
+
+
+def should_circuit_break(status_code: int, message: str) -> bool:
+    if is_transient_overload(message):
+        return False
+    if is_definitive_credential_error(message):
+        return True
+    return status_code >= 500
 
 
 def is_context_error(message: str) -> bool:
@@ -359,6 +408,7 @@ class ProxyStore:
         self.started_at = time.time()
         self.last_switch: dict[str, Any] | None = None
         self.active_provider: str | None = None
+        self.in_flight: set[str] = set()
         self.settings = self._load_settings()
         self.runtime = self._load_runtime()
         self.events = self._load_events()
@@ -559,6 +609,10 @@ class ProxyStore:
             "context_failure_count": max(
                 0, safe_int(item.get("context_failure_count"), 0)
             ) if estimator_is_current else 0,
+            "transient_failure_count": max(
+                0, safe_int(item.get("transient_failure_count"), 0)
+            ),
+            "last_transient_at": safe_float(item.get("last_transient_at"), 0),
             "context_estimator_version": CONTEXT_ESTIMATOR_VERSION,
             "probing": False,
         }
@@ -866,6 +920,17 @@ class ProxyStore:
         with self.lock:
             self.active_provider = name
 
+    def try_acquire_provider(self, name: str) -> bool:
+        with self.lock:
+            if name in self.in_flight:
+                return False
+            self.in_flight.add(name)
+            return True
+
+    def release_provider(self, name: str) -> None:
+        with self.lock:
+            self.in_flight.discard(name)
+
     def release_untried_probe(self, provider: dict[str, Any]) -> None:
         if provider.get("was_cooling"):
             with self.lock:
@@ -895,6 +960,8 @@ class ProxyStore:
                     "probing": False,
                 }
             )
+            state["transient_failure_count"] = 0
+            state["last_transient_at"] = 0
             if input_tokens_estimate:
                 state["max_success_input_tokens"] = max(
                     state["max_success_input_tokens"], input_tokens_estimate
@@ -927,20 +994,43 @@ class ProxyStore:
         input_tokens_estimate: int | None = None,
         retry_count: int = 0,
         adapter: str = OPENAI_RESPONSES_ADAPTER,
+        circuit_breaker: bool | None = None,
     ) -> None:
         now = time.time()
         with self.lock:
             state = self.runtime[name]
             context_failure = bool(input_tokens_estimate and is_context_error(error))
+            transient_failure = is_transient_overload(error)
+            request_failure = context_failure or (
+                circuit_breaker is False and not transient_failure
+            )
+            should_cool = (
+                not context_failure
+                and not transient_failure
+                and circuit_breaker is not False
+            )
+            if transient_failure:
+                if now - state["last_transient_at"] > TRANSIENT_FAILURE_WINDOW_SECONDS:
+                    state["transient_failure_count"] = 0
+                state["transient_failure_count"] += 1
+                state["last_transient_at"] = now
+                if state["transient_failure_count"] >= TRANSIENT_COOLDOWN_THRESHOLD:
+                    state["cooldown_until"] = now + TRANSIENT_COOLDOWN_SECONDS
+                    state["transient_failure_count"] = 0
             state.update(
                 {
-                    "cooldown_until": 0 if context_failure else now + self.settings["cooldown_seconds"],
+                    "cooldown_until": (
+                        now + self.settings["cooldown_seconds"]
+                        if should_cool
+                        else state["cooldown_until"] if transient_failure else 0
+                    ),
                     "last_error": error[:300],
-                    "last_failure_at": now,
-                    "failure_count": state["failure_count"] + 1,
                     "probing": False,
                 }
             )
+            if should_cool:
+                state["last_failure_at"] = now
+                state["failure_count"] += 1
             if context_failure:
                 current = state["min_context_failure_tokens"]
                 state["min_context_failure_tokens"] = (
@@ -949,7 +1039,11 @@ class ProxyStore:
                 state["context_failure_count"] += 1
             self._append_event(
                 name,
-                "failure",
+                (
+                    "request"
+                    if request_failure
+                    else "failure" if should_cool else "transient"
+                ),
                 latency_ms,
                 error,
                 requested_model,

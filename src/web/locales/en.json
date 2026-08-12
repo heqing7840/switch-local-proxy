@@ -37,6 +37,8 @@
   "history.message": "Message",
   "history.success": "Success",
   "history.failure": "Failure",
+  "history.transient": "Busy",
+  "history.request": "Request issue",
   "history.empty": "No Request Records Yet",
   "history.requestSucceeded": "Request succeeded",
   "history.openaiChat": "OpenAI Chat Completions",

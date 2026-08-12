@@ -103,7 +103,7 @@ The dashboard persists credentials, routing state, runtime health, and request m
 
 ## Failover Policy
 
-Providers are tried in priority order. An HTTP 502 is retried once on the same provider after a one-second delay. A second 502, 429, other 5xx responses, network errors, timeouts, or early SSE failures record one failure and move to the next eligible provider. A provider is cooled down temporarily, then probed again after the cooldown expires.
+Providers are tried in priority order, with in-memory reservations preventing concurrent tasks from piling onto the same channel. HTTP 502 is retried once after one second. HTTP 429, account concurrency limits, and explicit upstream overloads are forwarded to Codex unchanged and do not count as key failures. If the same provider returns two such errors within 60 seconds, it is briefly skipped for 10 seconds so Codex's next retry uses another key, then it automatically becomes eligible again. Only clear provider failures trigger the regular circuit breaker.
 
 The proxy does not retry after productive streaming output has already reached the client, because replaying that request could duplicate or truncate a response.
 

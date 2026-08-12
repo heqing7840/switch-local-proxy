@@ -25,10 +25,12 @@ from proxy_core import (  # noqa: E402
     inspect_sse_prime,
     is_context_error,
     is_retryable_status,
+    is_transient_overload,
     parse_key_text,
     parse_private_settings,
     source_ip_allowed,
     should_retry_same_provider,
+    should_circuit_break,
 )
 import server  # noqa: E402
 from server import (  # noqa: E402
@@ -305,6 +307,140 @@ class ProxyCoreTests(unittest.TestCase):
         self.assertFalse(should_retry_same_provider(502, 1))
         self.assertFalse(should_retry_same_provider(503, 0))
 
+    def test_overload_is_forwarded_without_retry_or_key_failure(self):
+        message = (
+            "stream disconnected before completion: Our servers are currently "
+            "overloaded. Please try again later."
+        )
+        self.assertTrue(is_transient_overload(message))
+        self.assertFalse(should_retry_same_provider(0, 0, message))
+        self.assertFalse(should_retry_same_provider(0, 1, message))
+        self.assertFalse(should_retry_same_provider(0, 2, message))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text("provider:sk-overload-test-key\n", encoding="utf-8")
+            store = ProxyStore(root / "state", key_file)
+            store.mark_failure("provider", message)
+            self.assertEqual(store.runtime["provider"]["cooldown_until"], 0)
+            self.assertEqual(store.runtime["provider"]["failure_count"], 0)
+            self.assertEqual(store.status()["events"][0]["result"], "transient")
+
+    def test_rate_and_concurrency_limits_are_transient(self):
+        self.assertTrue(is_transient_overload("Upstream rate limit exceeded, please retry later"))
+        self.assertTrue(is_transient_overload("Concurrency limit exceeded for account"))
+        self.assertFalse(should_circuit_break(429, "Upstream rate limit exceeded"))
+        self.assertFalse(should_circuit_break(401, "unauthorized client detected"))
+        self.assertTrue(should_circuit_break(401, "invalid_api_key"))
+        self.assertTrue(should_circuit_break(503, "upstream unavailable"))
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text("provider:sk-request-test-key\n", encoding="utf-8")
+            store = ProxyStore(root / "state", key_file)
+            store.mark_failure(
+                "provider", "unsupported model", circuit_breaker=False
+            )
+            self.assertEqual(store.runtime["provider"]["failure_count"], 0)
+            self.assertEqual(store.status()["events"][0]["result"], "request")
+
+    def test_repeated_transient_overload_briefly_skips_provider(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text(
+                "first:sk-first-provider\nsecond:sk-second-provider\n", encoding="utf-8"
+            )
+            store = ProxyStore(root / "state", key_file)
+            message = "Upstream rate limit exceeded, please retry later"
+            store.mark_failure("first", message, circuit_breaker=False)
+            self.assertEqual(store.runtime["first"]["cooldown_until"], 0)
+            store.mark_failure("first", message, circuit_breaker=False)
+            self.assertGreater(store.runtime["first"]["cooldown_until"], time.time())
+            self.assertEqual(store.runtime["first"]["failure_count"], 0)
+            eligible = store.eligible_providers(OPENAI_RESPONSES_ADAPTER)
+            self.assertEqual([item["name"] for item in eligible], ["second"])
+            store.runtime["first"]["cooldown_until"] = time.time() - 1
+            eligible = store.eligible_providers(OPENAI_RESPONSES_ADAPTER)
+            self.assertEqual([item["name"] for item in eligible], ["first", "second"])
+
+    def test_provider_in_flight_reservation_distributes_concurrent_requests(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text(
+                "first:sk-first-provider\nsecond:sk-second-provider\n", encoding="utf-8"
+            )
+            store = ProxyStore(root / "state", key_file)
+            providers = store.eligible_providers(OPENAI_RESPONSES_ADAPTER)
+            self.assertTrue(store.try_acquire_provider("first"))
+            self.assertFalse(store.try_acquire_provider("first"))
+            available = [item for item in providers if store.try_acquire_provider(item["name"])]
+            self.assertEqual([item["name"] for item in available], ["second"])
+            store.release_provider("first")
+            store.release_provider("second")
+            self.assertTrue(store.try_acquire_provider("first"))
+
+    def test_stream_overload_is_forwarded_without_retry_or_key_failure(self):
+        class OverloadedUpstream(Handler):
+            calls = 0
+
+            def log_message(self, format, *args):
+                pass
+
+            def do_POST(self):
+                self.rfile.read(int(self.headers.get("Content-Length", "0")))
+                type(self).calls += 1
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Connection", "close")
+                self.end_headers()
+                self.wfile.write(
+                    b'event: response.failed\ndata: {"type":"response.failed",'
+                    b'"response":{"status":"failed","error":{"message":'
+                    b'"Our servers are currently overloaded. Please try again later."}}}\n\n'
+                )
+                self.close_connection = True
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            key_file = root / "key.txt"
+            key_file.write_text("测试渠道:sk-overload-provider\n", encoding="utf-8")
+            store = ProxyStore(root / "state", key_file)
+            upstream = ThreadingHTTPServer(("127.0.0.1", 0), OverloadedUpstream)
+            upstream_thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+            upstream_thread.start()
+            store.settings["upstream_base_url"] = f"http://127.0.0.1:{upstream.server_port}/v1"
+            proxy = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+            proxy_thread = threading.Thread(target=proxy.serve_forever, daemon=True)
+            previous_store = server.STORE
+            server.STORE = store
+            proxy_thread.start()
+            connection = http.client.HTTPConnection("127.0.0.1", proxy.server_port, timeout=5)
+            try:
+                payload = json.dumps({"model": "gpt-5.6-sol", "input": "hello", "stream": True})
+                connection.request(
+                    "POST", "/v1/responses", body=payload,
+                    headers={"Content-Type": "application/json"},
+                )
+                response = connection.getresponse()
+                response.read()
+                self.assertEqual(response.status, 200)
+                self.assertEqual(OverloadedUpstream.calls, 1)
+                provider = store.status()["providers"][0]
+                self.assertEqual(provider["success_count"], 0)
+                self.assertEqual(provider["failure_count"], 0)
+                self.assertEqual(store.status()["events"][0]["result"], "transient")
+            finally:
+                connection.close()
+                proxy.shutdown()
+                proxy.server_close()
+                proxy_thread.join(timeout=2)
+                upstream.shutdown()
+                upstream.server_close()
+                upstream_thread.join(timeout=2)
+                server.STORE = previous_store
+
     def test_header_latin1_encodes_chinese_provider_names(self):
         name = "codex-app-5-速刷"
         safe = header_latin1(name)
@@ -418,8 +554,9 @@ class ProxyCoreTests(unittest.TestCase):
             )
             state = store.runtime["provider"]
             self.assertEqual(state["cooldown_until"], 0)
-            self.assertEqual(state["failure_count"], 1)
+            self.assertEqual(state["failure_count"], 0)
             self.assertEqual(state["context_failure_count"], 1)
+            self.assertEqual(store.status()["events"][0]["result"], "request")
 
     def test_existing_context_cooldown_is_cleared_on_startup(self):
         with tempfile.TemporaryDirectory() as directory:

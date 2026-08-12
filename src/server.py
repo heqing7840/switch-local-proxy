@@ -28,6 +28,8 @@ from proxy_core import (
     inspect_sse_prime,
     is_context_error,
     is_retryable_status,
+    is_transient_overload,
+    should_circuit_break,
     should_retry_same_provider,
 )
 
@@ -446,7 +448,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         failures: list[dict[str, str]] = []
+        acquired_any = False
         for index, provider in enumerate(providers):
+            if not STORE.try_acquire_provider(provider["name"]):
+                STORE.release_untried_probe(provider)
+                continue
+            acquired_any = True
             STORE.set_active_provider(provider["name"])
             model_override = STORE.provider_model(provider, requested_model)
             upstream_model = model_override or requested_model
@@ -467,32 +474,43 @@ class Handler(BaseHTTPRequestHandler):
                         content=payload,
                     ) as response:
                         latency_ms = int((time.monotonic() - started) * 1000)
-                        if should_retry_same_provider(response.status_code, retry_count):
-                            error_body = response.read()[:8192]
-                            retry_count += 1
-                            logging.warning(
-                                "provider=%s status=502 same_provider_retry=%s error=%s",
-                                provider["name"],
-                                retry_count,
-                                self._upstream_error(response.status_code, error_body),
-                            )
-                            time.sleep(1)
-                            continue
-                        if is_retryable_status(response.status_code):
+                        error_body = b""
+                        if response.status_code >= 400:
                             error_body = response.read()[:8192]
                             message = self._upstream_error(response.status_code, error_body)
+                            if should_retry_same_provider(
+                                response.status_code, retry_count, message
+                            ):
+                                retry_count += 1
+                                logging.warning(
+                                    "provider=%s status=%s same_provider_retry=%s error=%s",
+                                    provider["name"], response.status_code, retry_count, message,
+                                )
+                                time.sleep(1)
+                                continue
+                        if is_retryable_status(response.status_code):
                             STORE.mark_failure(
                                 provider["name"], message, latency_ms, requested_model, upstream_model,
-                                request_id, input_tokens_estimate, retry_count, adapter
+                                request_id, input_tokens_estimate, retry_count, adapter,
+                                circuit_breaker=should_circuit_break(
+                                    response.status_code, message
+                                ),
                             )
+                            if response.status_code == 429 or is_transient_overload(message):
+                                self._send_upstream_buffered(
+                                    response, error_body, provider["name"]
+                                )
+                                self._release_remaining_probes(providers[index + 1 :])
+                                STORE.release_provider(provider["name"])
+                                return
                             failures.append({"provider": provider["name"], "error": message})
                             logging.warning("provider=%s failure=%s", provider["name"], message)
                             break
                         if response.status_code >= 400:
-                            body = response.read()
                             STORE.release_untried_probe(provider)
-                            self._send_upstream_buffered(response, body, provider["name"])
+                            self._send_upstream_buffered(response, error_body, provider["name"])
                             self._release_remaining_probes(providers[index + 1 :])
+                            STORE.release_provider(provider["name"])
                             return
 
                         content_type = response.headers.get("content-type", "").lower()
@@ -501,6 +519,14 @@ class Handler(BaseHTTPRequestHandler):
                                 response, provider, latency_ms, requested_model, upstream_model,
                                 request_id, input_tokens_estimate, retry_count, adapter
                             )
+                            if outcome == "same_provider_retry":
+                                retry_count += 1
+                                logging.warning(
+                                    "provider=%s stream_overload_retry=%s",
+                                    provider["name"], retry_count,
+                                )
+                                time.sleep(1)
+                                continue
                             if outcome == "retry":
                                 failures.append(
                                     {
@@ -510,6 +536,7 @@ class Handler(BaseHTTPRequestHandler):
                                 )
                                 break
                             self._release_remaining_probes(providers[index + 1 :])
+                            STORE.release_provider(provider["name"])
                             return
 
                         body = response.read()
@@ -518,8 +545,16 @@ class Handler(BaseHTTPRequestHandler):
                             message = compact_error(semantic_error)
                             STORE.mark_failure(
                                 provider["name"], message, latency_ms, requested_model, upstream_model,
-                                request_id, input_tokens_estimate, retry_count, adapter
+                                request_id, input_tokens_estimate, retry_count, adapter,
+                                circuit_breaker=should_circuit_break(0, message),
                             )
+                            if is_transient_overload(message):
+                                self._send_upstream_buffered(
+                                    response, body, provider["name"]
+                                )
+                                self._release_remaining_probes(providers[index + 1 :])
+                                STORE.release_provider(provider["name"])
+                                return
                             failures.append({"provider": provider["name"], "error": message})
                             break
                         STORE.mark_success(
@@ -528,13 +563,23 @@ class Handler(BaseHTTPRequestHandler):
                         )
                         self._send_upstream_buffered(response, body, provider["name"])
                         self._release_remaining_probes(providers[index + 1 :])
+                        STORE.release_provider(provider["name"])
                         return
                 except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as error:
                     message = compact_error(type(error).__name__ + ": " + str(error))
                     latency_ms = int((time.monotonic() - started) * 1000)
+                    if should_retry_same_provider(0, retry_count, message):
+                        retry_count += 1
+                        logging.warning(
+                            "provider=%s transport_overload_retry=%s error=%s",
+                            provider["name"], retry_count, message,
+                        )
+                        time.sleep(1)
+                        continue
                     STORE.mark_failure(
                         provider["name"], message, latency_ms, requested_model, upstream_model,
-                        request_id, input_tokens_estimate, retry_count, adapter
+                        request_id, input_tokens_estimate, retry_count, adapter,
+                        circuit_breaker=True,
                     )
                     failures.append({"provider": provider["name"], "error": message})
                     logging.warning("provider=%s failure=%s", provider["name"], message)
@@ -544,13 +589,28 @@ class Handler(BaseHTTPRequestHandler):
                     latency_ms = int((time.monotonic() - started) * 1000)
                     STORE.mark_failure(
                         provider["name"], message, latency_ms, requested_model, upstream_model,
-                        request_id, input_tokens_estimate, retry_count, adapter
+                        request_id, input_tokens_estimate, retry_count, adapter,
+                        circuit_breaker=True,
                     )
                     failures.append({"provider": provider["name"], "error": message})
                     logging.exception("provider=%s unexpected failure", provider["name"])
                     break
+            STORE.release_provider(provider["name"])
 
         STORE.set_active_provider(None)
+        if not acquired_any:
+            self._send_json(
+                429,
+                {
+                    "error": {
+                        "message": "All local provider slots are busy; retry shortly",
+                        "type": "local_provider_busy",
+                        "retry_after_seconds": 1,
+                    }
+                },
+                extra_headers={"Retry-After": "1"},
+            )
+            return
         self._send_all_unavailable(failures)
 
     def _send_stream(
@@ -568,6 +628,7 @@ class Handler(BaseHTTPRequestHandler):
         iterator = response.iter_bytes()
         prime: list[bytes] = []
         prime_size = 0
+        transient_error_sent = False
         try:
             while prime_size < 256 * 1024:
                 chunk = next(iterator)
@@ -580,9 +641,13 @@ class Handler(BaseHTTPRequestHandler):
                     error = compact_error(message or "Upstream SSE failure")
                     STORE.mark_failure(
                         provider["name"], error, latency_ms, requested_model, upstream_model,
-                        request_id, input_tokens_estimate, retry_count, adapter
+                        request_id, input_tokens_estimate, retry_count, adapter,
+                        circuit_breaker=should_circuit_break(0, error),
                     )
                     logging.warning("provider=%s semantic_failure=%s", provider["name"], error)
+                    if is_transient_overload(error):
+                        transient_error_sent = True
+                        break
                     return "retry"
                 if outcome == "productive":
                     break
@@ -590,9 +655,10 @@ class Handler(BaseHTTPRequestHandler):
             combined = b"".join(prime)
             semantic_error = inspect_responses_payload(combined)
             if semantic_error:
+                error = compact_error(semantic_error)
                 STORE.mark_failure(
                     provider["name"],
-                    compact_error(semantic_error),
+                    error,
                     latency_ms,
                     requested_model,
                     upstream_model,
@@ -600,8 +666,12 @@ class Handler(BaseHTTPRequestHandler):
                     input_tokens_estimate,
                     retry_count,
                     adapter,
+                    circuit_breaker=should_circuit_break(0, error),
                 )
-                return "retry"
+                if is_transient_overload(error):
+                    transient_error_sent = True
+                else:
+                    return "retry"
         except (httpx.TimeoutException, httpx.NetworkError, httpx.RemoteProtocolError) as error:
             STORE.mark_failure(
                 provider["name"], compact_error(str(error)), latency_ms, requested_model, upstream_model,
@@ -616,10 +686,11 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("X-Switch-Local-Proxy-Provider", header_latin1(provider["name"]))
         self.send_header("X-Codex-Key-Provider", header_latin1(provider["name"]))
         self.end_headers()
-        STORE.mark_success(
-            provider["name"], latency_ms, requested_model, upstream_model,
-            request_id, input_tokens_estimate, retry_count, adapter
-        )
+        if not transient_error_sent:
+            STORE.mark_success(
+                provider["name"], latency_ms, requested_model, upstream_model,
+                request_id, input_tokens_estimate, retry_count, adapter
+            )
         try:
             for chunk in chain(prime, iterator):
                 if chunk:
@@ -724,18 +795,29 @@ class Handler(BaseHTTPRequestHandler):
             },
         )
 
-    def _send_json(self, status: int, value: dict) -> None:
+    def _send_json(
+        self, status: int, value: dict, extra_headers: dict[str, str] | None = None
+    ) -> None:
         self._send_bytes(
             status,
             json.dumps(value, ensure_ascii=False, separators=(",", ":")).encode(),
             "application/json; charset=utf-8",
+            extra_headers=extra_headers,
         )
 
-    def _send_bytes(self, status: int, body: bytes, content_type: str) -> None:
+    def _send_bytes(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        extra_headers: dict[str, str] | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        for name, value in (extra_headers or {}).items():
+            self.send_header(name, value)
         self.end_headers()
         self.wfile.write(body)
 
