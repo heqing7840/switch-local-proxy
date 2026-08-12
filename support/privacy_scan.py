@@ -141,6 +141,7 @@ def dist_findings(root: Path) -> list[tuple[str, str, int, str]]:
         "proxy_core.py",
         "requirements.txt",
         "server.py",
+        "support/watchdog.py",
         "version.json",
         "web/index.html",
         "web/update.svg",

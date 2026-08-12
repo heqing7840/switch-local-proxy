@@ -18,6 +18,7 @@ The proxy accepts OpenAI Responses, OpenAI-compatible Chat Completions, and Anth
 - No database or cloud control plane. Runtime state stays on the local machine.
 - The service binds to loopback by default and runs as a macOS background LaunchAgent.
 - `RunAtLoad` starts it at login and `KeepAlive` relaunches it after an unexpected exit; `./run.sh doctor` verifies both guarantees.
+- A separate no-window Python watchdog checks the health endpoint every 15 seconds and reloads or restarts the service if the job is unloaded, stopped, or unresponsive.
 - Cross-origin browser writes are rejected, request bodies are capped, and client cookies are never forwarded upstream.
 - The release gate scans tracked files, new unignored files, all Git history, and the `dist/` allowlist without printing matched values.
 
@@ -36,7 +37,7 @@ python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
 ```
 
-The first launch creates a local SQLite database under the ignored `runtime/` directory. Configure channels from the dashboard; credentials remain in that database and are never committed.
+The first launch creates a local SQLite database under the ignored `runtime/` directory. Credentials stay in that database and are never committed.
 
 Then run:
 
@@ -47,7 +48,9 @@ Then run:
 ./run.sh open
 ```
 
-The dashboard opens on the local machine. Client applications should point their OpenAI-compatible base URL to the local `/v1` endpoint. They do not need upstream provider credentials; the proxy reads them only from the local SQLite database.
+`install` and `doctor` succeed even before any provider key exists. After `open`, add at least one channel in the dashboard, then point client apps at the local `/v1` endpoint. Clients do not need upstream provider credentials; the proxy reads them only from the local SQLite database.
+
+If you move the project directory later, re-run `./run.sh repair` so LaunchAgents bind to the new path.
 
 ## Updates
 
